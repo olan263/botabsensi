@@ -1,0 +1,134 @@
+import telebot
+from telebot import types
+import sqlite3
+from datetime import datetime
+
+# ==================== CONFIGURATION ====================
+TOKEN = "ISI_TOKEN_BOT_KAMU_DISINI"
+bot = telebot.TeleBot(TOKEN)
+DB_NAME = "absensi.db"
+
+# ==================== DATABASE SETUP ====================
+def init_db():
+    """Membuat database dan tabel absensi jika belum ada"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS absensi (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            nama_lengkap TEXT,
+            tanggal TEXT,
+            jam TEXT,
+            status TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def simpan_absen(user_id, username, nama_lengkap, status):
+    """Menyimpan data absen ke database, mencegah absen ganda di hari yang sama"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    tanggal_hari_ini = datetime.now().strftime("%Y-%m-%d")
+    jam_sekarang = datetime.now().strftime("%H:%M:%S")
+    
+    # Cek apakah user sudah absen hari ini
+    cursor.execute("SELECT * FROM absensi WHERE user_id = ? AND tanggal = ?", (user_id, tanggal_hari_ini))
+    sudah_absen = cursor.fetchone()
+    
+    if sudah_absen:
+        conn.close()
+        return False, f"⚠️ Kamu sudah melakukan absensi hari ini sebagai *{sudah_absen[6]}* pada jam {sudah_absen[5]}."
+    
+    # Jika belum, masukkan data baru
+    cursor.execute('''
+        INSERT INTO absensi (user_id, username, nama_lengkap, tanggal, jam, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, username, nama_lengkap, tanggal_hari_ini, jam_sekarang, status))
+    
+    conn.commit()
+    conn.close()
+    return True, f"✅ Absensi *{status}* berhasil dicatat pada jam {jam_sekarang}!"
+
+# ==================== BOT COMMANDS ====================
+
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    """Menampilkan pesan selamat datang dan instruksi awal"""
+    teks = (
+        "👋 Selamat datang di Bot Absensi!\n\n"
+        "Gunakan perintah berikut:\n"
+        "👉 /absen - Untuk memunculkan menu absensi\n"
+        "👉 /rekap - Untuk melihat riwayat absensi kamu"
+    )
+    bot.reply_to(message, teks)
+
+@bot.message_handler(commands=['absen'])
+def show_absen_menu(message):
+    """Memunculkan tombol pilihan status absensi"""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    
+    # Membuat tombol interaktif di bawah pesan
+    btn_hadir = types.InlineKeyboardButton("🟢 Hadir", callback_data="absen_Hadir")
+    btn_izin = types.InlineKeyboardButton("🟡 Izin", callback_data="absen_Izin")
+    btn_sakit = types.InlineKeyboardButton("🔴 Sakit", callback_data="absen_Sakit")
+    
+    markup.add(btn_hadir, btn_izin, btn_sakit)
+    bot.send_message(message.chat.id, "Silakan pilih status kehadiranmu hari ini:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('absen_'))
+def handle_absen_click(call):
+    """Memproses ketika user mengklik salah satu tombol absen"""
+    status = call.data.split("_")[1]
+    user_id = call.from_user.id
+    username = call.from_user.username or "TanpaUsername"
+    
+    # Menggabungkan nama depan dan belakang user Telegram
+    nama_lengkap = call.from_user.first_name
+    if call.from_user.last_name:
+        nama_lengkap += f" {call.from_user.last_name}"
+        
+    # Proses simpan data
+    sukses, pesan = simpan_absen(user_id, username, nama_lengkap, status)
+    
+    # Edit pesan tombol tadi agar berubah menjadi teks konfirmasi (menghindari spam klik)
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=pesan,
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['rekap'])
+def show_rekap(message):
+    """Menampilkan 5 riwayat absensi terakhir khusus untuk user tersebut"""
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT tanggal, jam, status FROM absensi WHERE user_id = ? ORDER BY id DESC LIMIT 5", 
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        bot.reply_to(message, "📭 Kamu belum pernah melakukan absensi.")
+        return
+        
+    teks_rekap = "📋 *5 Riwayat Absensi Terakhir Kamu:*\n\n"
+    for row in rows:
+        teks_rekap += f"📅 {row[0]} | ⏰ {row[1]} | *{row[2]}*\n"
+        
+    bot.reply_to(message, teks_rekap, parse_mode="Markdown")
+
+# ==================== MAIN PROGRAM ====================
+if __name__ == '__main__':
+    print("🤖 Database diinisialisasi...")
+    init_db()
+    print("🚀 Bot sedang berjalan... Tekan Ctrl+C untuk menghentikan.")
+    bot.infinity_polling()

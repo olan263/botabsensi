@@ -1,0 +1,545 @@
+kode nama kegiatan tag lokasi foto dan rencana kegiatan ( input )
+upload foto dan kegiatan pakai bot
+menerima input dlua
+
+api bot :
+8826307677:AAGS-NqqyLGfksZY4WlHr7zLcl4fSFZ_Bnk
+
+import os
+import re
+import math
+import logging
+import asyncio
+from datetime import datetime
+
+import psycopg2
+from psycopg2 import pool
+
+from PIL import Image
+from PIL.ExifTags import TAGS, GPSTAGS
+
+try:
+    import easyocr
+    OCR_TERSEDIA = True
+except ImportError:
+    OCR_TERSEDIA = False
+
+from telegram import Update, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
+    filters,
+)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ==========================================
+# 0. TOKEN BOT TELEGRAM
+# ==========================================
+# Ambil token dari @BotFather di Telegram, lalu isi di sini
+# (atau lebih aman: simpan di environment variable, contoh:
+#  BOT_TOKEN = os.environ["BOT_TOKEN"])
+BOT_TOKEN = "ISI_TOKEN_BARU_KAMU_DI_SINI"
+
+# ==========================================
+# 0b. KONFIGURASI DATABASE POSTGRESQL
+# ==========================================
+# Sesuaikan dengan pengaturan pgAdmin 4 / server Postgres kamu
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "absensi_karyawan",
+    "user": "postgres",
+    "password": "ISI_PASSWORD_POSTGRES_KAMU",
+}
+
+# Connection pool kecil (1-5 koneksi) supaya tidak buka-tutup koneksi tiap query
+_db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, **DB_CONFIG)
+
+
+def _cari_nama_karyawan_sync(kode):
+    """Query sinkron ke tabel master 'karyawan' berdasarkan kode.
+    Return nama (str) kalau ketemu, atau None kalau tidak ada."""
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT nama FROM karyawan WHERE kode = %s", (kode,))
+            hasil = cur.fetchone()
+            return hasil[0] if hasil else None
+    finally:
+        _db_pool.putconn(conn)
+
+
+async def cari_nama_karyawan(kode):
+    """Versi async (dijalankan di thread terpisah supaya tidak memblokir bot)"""
+    try:
+        return await asyncio.to_thread(_cari_nama_karyawan_sync, kode)
+    except Exception as e:
+        logger.error(f"Gagal query database: {e}")
+        return None
+
+# ==========================================
+# 1. KONFIGURASI DATA UTAMA
+# ==========================================
+
+TITIK_LOKASI_RESMI = [
+    {"nama": "Abadijaya", "lat": -6.392621, "lon": 106.843638},
+    {"nama": "Lokasi B", "lat": -6.2100, "lon": 106.8500},
+    {"nama": "Lokasi C", "lat": -6.2150, "lon": 106.8400},
+    {"nama": "Lokasi D", "lat": -6.2200, "lon": 106.8450},
+    {"nama": "Lokasi E", "lat": -6.2000, "lon": 106.8600},
+    {"nama": "Lokasi F", "lat": -6.2050, "lon": 106.8300},
+    {"nama": "Lokasi G", "lat": -6.1980, "lon": 106.8480},
+]
+
+FOLDER_FOTO = "foto_absen"
+os.makedirs(FOLDER_FOTO, exist_ok=True)
+
+# Database sementara (simulasi, hilang tiap bot restart).
+# Untuk produksi sebaiknya diganti database sungguhan (SQLite/Postgres dll).
+# Struktur: db_absensi[tanggal][kode_karyawan] = {...}
+# Dikelompokkan per tanggal supaya absen WAJIB dilakukan ulang tiap hari
+# (kalau tidak, kode yang pernah absen sekali akan dianggap absen selamanya).
+db_absensi = {}
+db_kegiatan = {}
+
+
+def _tanggal_hari_ini():
+    return datetime.now().strftime("%Y-%m-%d")
+
+_ocr_reader = None
+
+
+def _get_ocr_reader():
+    global _ocr_reader
+    if _ocr_reader is None:
+        logger.info("Memuat model OCR (sekali di awal)...")
+        _ocr_reader = easyocr.Reader(["id", "en"])
+    return _ocr_reader
+
+
+# ==========================================
+# 2. FUNGSI UTILITAS & DETEKSI KOORDINAT FOTO
+# ==========================================
+
+def konversi_ke_desimal(value):
+    d = float(value[0])
+    m = float(value[1])
+    s = float(value[2])
+    return d + (m / 60.0) + (s / 3600.0)
+
+
+def ambil_koordinat_dari_exif(path_foto):
+    """METODE 1: baca metadata EXIF GPS foto (hanya ada kalau foto dikirim
+    sebagai File/Document, bukan Photo terkompresi biasa)"""
+    try:
+        image = Image.open(path_foto)
+        exif_data = image._getexif()
+        if not exif_data:
+            return None, None
+
+        geotagging = {}
+        for tag_id, value in exif_data.items():
+            tag = TAGS.get(tag_id, tag_id)
+            if tag == "GPSInfo":
+                for t in value:
+                    sub_tag = GPSTAGS.get(t, t)
+                    geotagging[sub_tag] = value[t]
+
+        if "GPSLatitude" in geotagging and "GPSLongitude" in geotagging:
+            lat = konversi_ke_desimal(geotagging["GPSLatitude"])
+            lon = konversi_ke_desimal(geotagging["GPSLongitude"])
+            if geotagging.get("GPSLatitudeRef") == "S":
+                lat = -lat
+            if geotagging.get("GPSLongitudeRef") == "W":
+                lon = -lon
+            return lat, lon
+    except Exception as e:
+        logger.warning(f"Gagal membaca EXIF foto: {e}")
+
+    return None, None
+
+
+def ambil_koordinat_dari_teks_ocr(path_foto):
+    """METODE 2 (fallback): baca watermark teks koordinat di badan foto lewat OCR
+    (tetap kebaca walau foto dikompres Telegram, karena bagian dari pixel gambar)"""
+    if not OCR_TERSEDIA:
+        logger.warning("Modul 'easyocr' belum terinstall.")
+        return None, None
+    try:
+        reader = _get_ocr_reader()
+        hasil_ocr = reader.readtext(path_foto)
+        teks_penuh = " ".join([blok[1] for blok in hasil_ocr])
+        logger.info(f"Teks Terdeteksi di Foto (OCR): {teks_penuh}")
+
+        pola_koordinat = re.findall(r"(-?\d+\.\d+)", teks_penuh)
+        if len(pola_koordinat) >= 2:
+            lat = float(pola_koordinat[0])
+            lon = float(pola_koordinat[1])
+            return lat, lon
+    except Exception as e:
+        logger.warning(f"Gagal memproses OCR foto: {e}")
+
+    return None, None
+
+
+def deteksi_koordinat_foto(path_foto):
+    """Gabungan: coba EXIF dulu, fallback ke OCR watermark teks.
+    Return (lat, lon, sumber)"""
+    lat, lon = ambil_koordinat_dari_exif(path_foto)
+    if lat is not None and lon is not None:
+        return lat, lon, "EXIF"
+
+    lat, lon = ambil_koordinat_dari_teks_ocr(path_foto)
+    if lat is not None and lon is not None:
+        return lat, lon, "OCR"
+
+    return None, None, None
+
+
+def hitung_jarak_meter(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+def validasi_lokasi(user_lat, user_lon):
+    for lokasi in TITIK_LOKASI_RESMI:
+        jarak = hitung_jarak_meter(user_lat, user_lon, lokasi["lat"], lokasi["lon"])
+        if jarak <= 50:
+            return True, lokasi["nama"], jarak
+    return False, None, None
+
+
+def sensor_nomor_hp(nomor):
+    """Menyensor nomor HP, hanya menampilkan 3 digit awal, contoh: 081234567890 -> 081*********"""
+    nomor_bersih = re.sub(r"\s+", "", nomor)
+    if len(nomor_bersih) <= 3:
+        return "*" * len(nomor_bersih)
+    depan = nomor_bersih[:3]
+    tengah = "*" * (len(nomor_bersih) - 3)
+    return f"{depan}{tengah}"
+
+
+async def _download_foto_dari_pesan(update: Update, prefix: str):
+    """Menerima foto baik dikirim sebagai Photo maupun Document (file gambar).
+    Return path foto lokal, atau None kalau pesan bukan foto/gambar."""
+    pesan = update.message
+    tg_file = None
+    ext = "jpg"
+
+    if pesan.photo:
+        tg_file = await pesan.photo[-1].get_file()
+    elif pesan.document and pesan.document.mime_type and pesan.document.mime_type.startswith("image/"):
+        tg_file = await pesan.document.get_file()
+        if pesan.document.file_name and "." in pesan.document.file_name:
+            ext = pesan.document.file_name.rsplit(".", 1)[-1]
+
+    if tg_file is None:
+        return None
+
+    path_foto = os.path.join(FOLDER_FOTO, f"{prefix}_{int(datetime.now().timestamp())}.{ext}")
+    await tg_file.download_to_drive(path_foto)
+    return path_foto
+
+
+# ==========================================
+# 3. STATE CONVERSATION HANDLER
+# ==========================================
+ABSEN_KODE, ABSEN_LOKASI, ABSEN_FOTO, ABSEN_RENCANA = range(4)
+KEG_KODE, KEG_NAMA, KEG_LOKASI, KEG_FOTO, KEG_HASIL, KEG_NOHP, KEG_PIC = range(4, 11)
+
+
+# ---------- ALUR ABSEN MASUK ----------
+
+async def absen_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "📋 *ABSEN MASUK*\nMasukkan Kode Karyawan Anda:", parse_mode="Markdown"
+    )
+    return ABSEN_KODE
+
+
+async def absen_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kode = update.message.text.strip()
+
+    nama = await cari_nama_karyawan(kode)
+    if nama is None:
+        await update.message.reply_text(
+            f"❌ Kode karyawan '{kode}' tidak ditemukan di database.\n"
+            "Mohon cek kembali kode Anda, atau hubungi admin kalau kode ini seharusnya terdaftar."
+        )
+        return ConversationHandler.END
+
+    context.user_data["kode"] = kode
+    context.user_data["nama"] = nama
+
+    tombol_lokasi = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Kirim Lokasi Saya Sekarang", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        f"Halo, *{nama}*! 👋\n\n"
+        "📍 Silakan share lokasi Anda dulu (tekan tombol di bawah).\n"
+        "Pastikan Anda sedang berada di lokasi yang benar saat share.",
+        parse_mode="Markdown",
+        reply_markup=tombol_lokasi,
+    )
+    return ABSEN_LOKASI
+
+
+async def absen_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.location:
+        await update.message.reply_text(
+            "Mohon share lokasi lewat tombol 📍 yang tersedia, bukan ketik teks."
+        )
+        return ABSEN_LOKASI
+
+    lat = update.message.location.latitude
+    lon = update.message.location.longitude
+
+    tervalidasi, nama_lokasi, jarak = validasi_lokasi(lat, lon)
+    if not tervalidasi:
+        await update.message.reply_text(
+            "❌ Absen Gagal! Lokasi Anda berada di luar radius 50 meter dari titik resmi.\n"
+            f"(Koordinat Anda: {lat:.6f}, {lon:.6f})",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return ConversationHandler.END
+
+    context.user_data["tag_lokasi"] = f"{nama_lokasi} ({jarak:.1f} meter)"
+
+    await update.message.reply_text(
+        f"✅ Lokasi tervalidasi: *{nama_lokasi}* ({jarak:.1f} m dari titik resmi)\n\n"
+        "📸 Sekarang kirim FOTO sebagai bukti kehadiran Anda:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ABSEN_FOTO
+
+
+async def absen_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    path_foto = await _download_foto_dari_pesan(update, f"absen_{context.user_data.get('kode', 'x')}")
+    if path_foto is None:
+        await update.message.reply_text("Mohon kirim dalam bentuk FOTO atau File gambar ya.")
+        return ABSEN_FOTO
+
+    context.user_data["foto"] = path_foto
+
+    await update.message.reply_text("Masukkan Rencana Kegiatan Hari Ini:")
+    return ABSEN_RENCANA
+
+
+async def absen_rencana(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["rencana_kegiatan"] = update.message.text.strip()
+
+    jam_sekarang = datetime.now().time()
+    batas_telat = datetime.strptime("11:00", "%H:%M").time()
+    status_absen = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
+
+    kode = context.user_data["kode"]
+    tanggal = _tanggal_hari_ini()
+    db_absensi.setdefault(tanggal, {})[kode] = {
+        "nama": context.user_data["nama"],
+        "tag_lokasi": context.user_data["tag_lokasi"],
+        "foto": context.user_data["foto"],
+        "rencana_kegiatan": context.user_data["rencana_kegiatan"],
+        "jam_absen": datetime.now().strftime("%H:%M"),
+        "status": status_absen,
+    }
+
+    await update.message.reply_text(
+        f"✅ Absen berhasil tersimpan!\nStatus: *{status_absen}*",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ConversationHandler.END
+
+
+# ---------- ALUR INPUT KEGIATAN ----------
+
+async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "📋 *INPUT KEGIATAN*\nMasukkan Kode Karyawan Anda:", parse_mode="Markdown"
+    )
+    return KEG_KODE
+
+
+async def keg_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kode = update.message.text.strip()
+    tanggal = _tanggal_hari_ini()
+
+    if kode not in db_absensi.get(tanggal, {}):
+        await update.message.reply_text(
+            "❌ Anda BELUM melakukan absen masuk HARI INI! Silakan /absen terlebih dahulu."
+        )
+        return ConversationHandler.END
+
+    context.user_data["kode"] = kode
+    context.user_data["tanggal"] = tanggal
+    await update.message.reply_text(
+        f"Halo, {db_absensi[tanggal][kode]['nama']}. Masukkan Nama Kegiatan:"
+    )
+    return KEG_NAMA
+
+
+async def keg_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["nama_kegiatan"] = update.message.text.strip()
+    await update.message.reply_text("Masukkan Lokasi Kegiatan:")
+    return KEG_LOKASI
+
+
+async def keg_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["tag_lokasi_kegiatan"] = update.message.text.strip()
+    await update.message.reply_text("Kirim FOTO Kegiatan:")
+    return KEG_FOTO
+
+
+async def keg_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    path_foto = await _download_foto_dari_pesan(update, f"kegiatan_{context.user_data.get('kode', 'x')}")
+    if path_foto is None:
+        await update.message.reply_text("Mohon kirim dalam bentuk FOTO atau File gambar ya.")
+        return KEG_FOTO
+
+    context.user_data["foto_kegiatan"] = path_foto
+    await update.message.reply_text("Masukkan Hasil dari Kegiatan:")
+    return KEG_HASIL
+
+
+async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["hasil"] = update.message.text.strip()
+    await update.message.reply_text("Masukkan No HP PIC Lapangan:")
+    return KEG_NOHP
+
+
+async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["no_hp_pic"] = update.message.text.strip()
+    await update.message.reply_text("Masukkan Nama PIC Lapangan:")
+    return KEG_PIC
+
+
+async def keg_pic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["nama_pic"] = update.message.text.strip()
+
+    kode = context.user_data["kode"]
+    tanggal = context.user_data["tanggal"]
+    db_kegiatan.setdefault(tanggal, {})[kode] = {
+        "nama_karyawan": db_absensi[tanggal][kode]["nama"],
+        "nama_kegiatan": context.user_data["nama_kegiatan"],
+        "tag_lokasi": context.user_data["tag_lokasi_kegiatan"],
+        "foto_kegiatan": context.user_data["foto_kegiatan"],
+        "hasil": context.user_data["hasil"],
+        "no_hp_pic": context.user_data["no_hp_pic"],
+        "nama_pic": context.user_data["nama_pic"],
+    }
+
+    await update.message.reply_text(
+        "✅ Laporan kegiatan berhasil direkap!", reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+# ---------- UMUM ----------
+
+async def batal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("Dibatalkan.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+
+async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 *Bot Absensi & Kegiatan*\n\n"
+        "/absen - Absen masuk (nama otomatis dari kode, share lokasi, lalu foto)\n"
+        "/kegiatan - Input laporan kegiatan (wajib absen dulu)\n"
+        "/rekap - Lihat rekap data absensi & kegiatan\n"
+        "/batal - Batalkan proses yang sedang berjalan",
+        parse_mode="Markdown",
+    )
+
+
+async def rekap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    teks = "*=== REKAP DATA ===*\n"
+
+    teks += "\n*Absensi:*\n"
+    if not db_absensi:
+        teks += "Belum ada data absensi.\n"
+    for tanggal, data_tanggal in sorted(db_absensi.items()):
+        teks += f"\n_{tanggal}_\n"
+        for k, v in data_tanggal.items():
+            teks += (
+                f"• {k} | {v['nama']} | Jam {v['jam_absen']} | {v['status']}\n"
+                f"  Lokasi: {v['tag_lokasi']}\n"
+            )
+
+    teks += "\n*Kegiatan:*\n"
+    if not db_kegiatan:
+        teks += "Belum ada data kegiatan.\n"
+    for tanggal, data_tanggal in sorted(db_kegiatan.items()):
+        teks += f"\n_{tanggal}_\n"
+        for k, v in data_tanggal.items():
+            teks += (
+                f"• {k} | {v['nama_karyawan']} | {v['nama_kegiatan']}\n"
+                f"  PIC: {v['nama_pic']} ({sensor_nomor_hp(v['no_hp_pic'])})\n"
+            )
+
+    await update.message.reply_text(teks, parse_mode="Markdown")
+
+
+# ==========================================
+# 4. SETUP APLIKASI BOT
+# ==========================================
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    conv_absen = ConversationHandler(
+        entry_points=[CommandHandler("absen", absen_mulai)],
+        states={
+            ABSEN_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_kode)],
+            ABSEN_LOKASI: [MessageHandler(filters.LOCATION, absen_lokasi)],
+            ABSEN_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, absen_foto)],
+            ABSEN_RENCANA: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_rencana)],
+        },
+        fallbacks=[CommandHandler("batal", batal)],
+    )
+
+    conv_kegiatan = ConversationHandler(
+        entry_points=[CommandHandler("kegiatan", kegiatan_mulai)],
+        states={
+            KEG_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_kode)],
+            KEG_NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_nama)],
+            KEG_LOKASI: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_lokasi)],
+            KEG_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, keg_foto)],
+            KEG_HASIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_hasil)],
+            KEG_NOHP: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_nohp)],
+            KEG_PIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_pic)],
+        },
+        fallbacks=[CommandHandler("batal", batal)],
+    )
+
+    app.add_handler(CommandHandler("start", mulai))
+    app.add_handler(CommandHandler("help", mulai))
+    app.add_handler(CommandHandler("rekap", rekap))
+    app.add_handler(conv_absen)
+    app.add_handler(conv_kegiatan)
+
+    logger.info("Bot berjalan...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
