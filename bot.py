@@ -24,6 +24,19 @@ try:
 except ImportError:
     REQUESTS_TERSEDIA = False
 
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials as GSheetCredentials
+    GSHEET_TERSEDIA = True
+except ImportError:
+    GSHEET_TERSEDIA = False
+
+try:
+    from openpyxl import Workbook
+    OPENPYXL_TERSEDIA = True
+except ImportError:
+    OPENPYXL_TERSEDIA = False
+
 from telegram import (
     Update,
     ReplyKeyboardRemove,
@@ -94,6 +107,138 @@ if not DB_CONFIG["password"]:
 # Connection pool kecil (1-5 koneksi) supaya tidak buka-tutup koneksi tiap query
 _db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, **DB_CONFIG)
 
+# ==========================================
+# 0c. KONFIGURASI GOOGLE SHEETS (opsional)
+# ==========================================
+# Kalau kedua env var ini diisi, tiap absen/kegiatan baru otomatis ditulis
+# juga ke Google Sheets (selain ke PostgreSQL). Kalau kosong, sync dilewati
+# tanpa mengganggu jalannya bot.
+# Cara setup singkat:
+#   1. Buat Service Account di Google Cloud Console, aktifkan Google Sheets API
+#   2. Download file kunci JSON-nya, taruh di folder bot (JANGAN commit ke Git)
+#   3. Share Google Sheet tujuan ke email service account itu (akses Editor)
+#   4. Isi path file JSON & ID spreadsheet (dari URL sheet) di .env
+GSHEET_CREDENTIALS_FILE = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_FILE", "")
+GSHEET_SPREADSHEET_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
+
+FOLDER_EXPORT = "export_excel"
+os.makedirs(FOLDER_EXPORT, exist_ok=True)
+
+_gsheet_ws_absensi = None
+_gsheet_ws_kegiatan = None
+
+
+def _init_gsheet():
+    """Inisialisasi koneksi Google Sheets sekali di awal (dipanggil dari main()).
+    Gagal/tidak dikonfigurasi -> sync dilewati, bot tetap jalan normal."""
+    global _gsheet_ws_absensi, _gsheet_ws_kegiatan
+
+    if not GSHEET_TERSEDIA:
+        logger.warning("Modul 'gspread'/'google-auth' belum terinstall, sync Google Sheets dilewati.")
+        return
+    if not GSHEET_CREDENTIALS_FILE or not GSHEET_SPREADSHEET_ID:
+        logger.warning(
+            "GOOGLE_SHEETS_CREDENTIALS_FILE / GOOGLE_SHEETS_ID belum diisi di .env, "
+            "sync Google Sheets dilewati."
+        )
+        return
+
+    try:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = GSheetCredentials.from_service_account_file(GSHEET_CREDENTIALS_FILE, scopes=scopes)
+        client = gspread.authorize(creds)
+        sh = client.open_by_key(GSHEET_SPREADSHEET_ID)
+
+        try:
+            ws_absensi = sh.worksheet("Absensi")
+        except gspread.WorksheetNotFound:
+            ws_absensi = sh.add_worksheet(title="Absensi", rows=2000, cols=10)
+            ws_absensi.append_row(["Tanggal", "Kode", "Nama", "Tag Lokasi", "Rencana/Keterangan", "Jam Absen", "Status"])
+
+        try:
+            ws_kegiatan = sh.worksheet("Kegiatan")
+        except gspread.WorksheetNotFound:
+            ws_kegiatan = sh.add_worksheet(title="Kegiatan", rows=2000, cols=12)
+            ws_kegiatan.append_row([
+                "Tanggal", "Kode", "Nama Karyawan", "Nama Kegiatan", "Tag Lokasi", "Hasil",
+                "No HP PIC Pelanggan", "Nama PIC Pelanggan", "Jabatan PIC Pelanggan", "Status Deal", "Paket",
+            ])
+
+        _gsheet_ws_absensi = ws_absensi
+        _gsheet_ws_kegiatan = ws_kegiatan
+        logger.info("Koneksi Google Sheets berhasil diinisialisasi.")
+    except Exception as e:
+        logger.error(f"Gagal inisialisasi Google Sheets: {e}")
+        _gsheet_ws_absensi = None
+        _gsheet_ws_kegiatan = None
+
+
+def _sync_absensi_ke_sheet_sync(tanggal, kode, nama, tag_lokasi, rencana_atau_keterangan, jam_absen, status):
+    if _gsheet_ws_absensi is None:
+        return
+    try:
+        _gsheet_ws_absensi.append_row(
+            [tanggal, kode, nama, tag_lokasi or "", rencana_atau_keterangan or "", jam_absen, status]
+        )
+    except Exception as e:
+        logger.error(f"Gagal sync absensi ke Google Sheets: {e}")
+
+
+async def sync_absensi_ke_sheet(tanggal, kode, nama, tag_lokasi, rencana_atau_keterangan, jam_absen, status):
+    await asyncio.to_thread(
+        _sync_absensi_ke_sheet_sync, tanggal, kode, nama, tag_lokasi, rencana_atau_keterangan, jam_absen, status
+    )
+
+
+def _sync_kegiatan_ke_sheet_sync(
+    tanggal, kode, nama_karyawan, nama_kegiatan, tag_lokasi, hasil,
+    no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
+):
+    if _gsheet_ws_kegiatan is None:
+        return
+    try:
+        _gsheet_ws_kegiatan.append_row([
+            tanggal, kode, nama_karyawan, nama_kegiatan, tag_lokasi or "", hasil,
+            no_hp_pic or "", nama_pic or "", jabatan_pic or "", status_deal or "", paket or "",
+        ])
+    except Exception as e:
+        logger.error(f"Gagal sync kegiatan ke Google Sheets: {e}")
+
+
+async def sync_kegiatan_ke_sheet(
+    tanggal, kode, nama_karyawan, nama_kegiatan, tag_lokasi, hasil,
+    no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
+):
+    await asyncio.to_thread(
+        _sync_kegiatan_ke_sheet_sync, tanggal, kode, nama_karyawan, nama_kegiatan, tag_lokasi, hasil,
+        no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
+    )
+
+
+def _build_excel_export_sync():
+    """Bangun 1 file Excel (.xlsx) berisi 2 sheet (Absensi & Kegiatan) dari
+    seluruh data yang ada di database saat ini. Return path file yang dibuat."""
+    wb = Workbook()
+
+    ws1 = wb.active
+    ws1.title = "Absensi"
+    ws1.append(["Tanggal", "Kode", "Nama", "Jam Absen", "Status", "Lokasi"])
+    for row in _ambil_rekap_absensi_sync():
+        ws1.append(list(row))
+
+    ws2 = wb.create_sheet("Kegiatan")
+    ws2.append([
+        "Tanggal", "Kode", "Nama Karyawan", "Nama Kegiatan", "Nama PIC Pelanggan",
+        "Jabatan PIC Pelanggan", "No HP PIC Pelanggan", "Status Deal", "Paket",
+    ])
+    for row in _ambil_rekap_kegiatan_sync():
+        ws2.append(list(row))
+
+    nama_file = f"export_rekap_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    path_file = os.path.join(FOLDER_EXPORT, nama_file)
+    wb.save(path_file)
+    return path_file
+
 
 # ==========================================
 # 0b. HELPER DATABASE - MASTER KARYAWAN
@@ -159,6 +304,9 @@ async def simpan_absensi(tanggal, kode, nama, tag_lokasi, foto, rencana_kegiatan
     await asyncio.to_thread(
         _simpan_absensi_sync, tanggal, kode, nama, tag_lokasi, foto, rencana_kegiatan, jam_absen, status
     )
+    # Sync ke Google Sheets tidak boleh menggagalkan alur absen kalau errornya di Sheets,
+    # jadi errornya sudah ditangani & di-log di dalam fungsi sync itu sendiri.
+    await sync_absensi_ke_sheet(tanggal, kode, nama, tag_lokasi, rencana_kegiatan, jam_absen, status)
 
 
 def _cek_sudah_absen_sync(tanggal, kode):
@@ -204,6 +352,13 @@ async def simpan_kegiatan(
 ):
     await asyncio.to_thread(
         _simpan_kegiatan_sync, tanggal, kode, nama_kegiatan, tag_lokasi, foto_kegiatan, hasil,
+        no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
+    )
+    # nama_karyawan diambil dari context.user_data["nama"] oleh pemanggil lewat kode di bawah;
+    # di sini kita sync pakai data yang sama seperti yang barusan disimpan ke DB.
+    nama_karyawan = await cari_nama_karyawan(kode)
+    await sync_kegiatan_ke_sheet(
+        tanggal, kode, nama_karyawan, nama_kegiatan, tag_lokasi, hasil,
         no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
     )
 
@@ -978,7 +1133,7 @@ async def keg_status_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await query.message.reply_text("Masukkan No HP PIC Lapangan:")
+    await query.message.reply_text("Masukkan No HP PIC Pelanggan:")
     return KEG_NOHP
 
 
@@ -989,7 +1144,7 @@ async def keg_paket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text("Masukkan No HP PIC Lapangan:")
+    await update.message.reply_text("Masukkan No HP PIC Pelanggan:")
     return KEG_NOHP
 
 
@@ -1000,7 +1155,7 @@ async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text("Masukkan Nama PIC Lapangan:")
+    await update.message.reply_text("Masukkan Nama PIC Pelanggan:")
     return KEG_PIC
 
 
@@ -1197,6 +1352,7 @@ async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/kegiatan - Input laporan kegiatan/visit (wajib absen Hadir dulu)\n"
         "/rekapabsen - Lihat rekap riwayat absensi (khusus di grup notifikasi)\n"
         "/rekapkegiatan - Lihat rekap riwayat kegiatan (khusus di grup notifikasi)\n"
+        "/exportexcel - Download semua data sebagai file Excel (khusus di grup notifikasi)\n"
         "/grupid - (setup admin) Lihat ID chat grup ini\n"
         "/batal - Batalkan proses yang sedang berjalan",
         parse_mode="Markdown",
@@ -1268,6 +1424,38 @@ async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batas = 4000
     for i in range(0, len(teks), batas):
         await update.message.reply_text(teks[i:i + batas])
+
+
+async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Export seluruh data absensi & kegiatan saat ini ke 1 file Excel (.xlsx)
+    dan kirim langsung ke chat (khusus dari grup notifikasi resmi)."""
+    if not await _cek_akses_rekap(update):
+        await update.message.reply_text(
+            "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
+        )
+        return
+
+    if not OPENPYXL_TERSEDIA:
+        await update.message.reply_text(
+            "⚠️ Modul 'openpyxl' belum terinstall di server.\nInstall dengan: pip install openpyxl"
+        )
+        return
+
+    await update.message.reply_text("⏳ Sedang menyiapkan file Excel...")
+
+    try:
+        path_file = await asyncio.to_thread(_build_excel_export_sync)
+    except Exception as e:
+        logger.error(f"Gagal membuat file Excel: {e}")
+        await update.message.reply_text("⚠️ Gagal membuat file Excel dari database. Coba lagi nanti.")
+        return
+
+    try:
+        with open(path_file, "rb") as f:
+            await update.message.reply_document(document=f, filename=os.path.basename(path_file))
+    except Exception as e:
+        logger.error(f"Gagal mengirim file Excel: {e}")
+        await update.message.reply_text("⚠️ File berhasil dibuat tapi gagal dikirim. Coba lagi.")
 
 
 # ==========================================
@@ -1409,10 +1597,13 @@ def main():
     app.add_handler(CommandHandler("help", mulai))
     app.add_handler(CommandHandler("rekapabsen", rekap_absen))
     app.add_handler(CommandHandler("rekapkegiatan", rekap_kegiatan))
+    app.add_handler(CommandHandler("exportexcel", export_excel))
     app.add_handler(CommandHandler("grupid", grup_id))
     app.add_handler(conv_absen)
     app.add_handler(conv_kegiatan)
     app.add_error_handler(error_handler)
+
+    _init_gsheet()
 
     if app.job_queue is not None:
         wib = ZoneInfo("Asia/Jakarta")
