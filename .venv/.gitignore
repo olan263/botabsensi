@@ -1,0 +1,24 @@
+# ==========================================================
+# TEMPLATE KONFIGURASI - JANGAN diisi di sini, JANGAN di-commit ke Git!
+# ==========================================================
+# Cara pakai:
+#   1. Copy file ini jadi ".env" (bukan ".env.example") di folder yang sama dgn bot.py
+#      cp .env.example .env
+#   2. Isi nilai ASLI di file ".env" (bukan di file ini)
+#   3. Tambahkan baris ".env" ke file .gitignore
+# ==========================================================
+
+# Token BARU hasil revoke dari @BotFather (bukan token lama yang sudah bocor)
+BOT_TOKEN=8826307677:AAGgt9O7eGgrgbcFOGIj3pHhs5p1tOs5a5Y
+
+# ID grup Telegram tujuan notifikasi & rekap otomatis (angka negatif, dari /grupid)
+GROUP_CHAT_ID=-5591365135
+
+# Password PostgreSQL yang BARU (bukan password lama yang sudah bocor)
+DB_PASSWORD=140505
+
+# Opsional, isi kalau beda dari default
+# DB_HOST=localhost
+# DB_PORT=5432
+# DB_NAME=absensi_karyawan
+# DB_USER=postgres
