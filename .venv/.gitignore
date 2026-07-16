@@ -22,3 +22,4 @@ DB_PASSWORD=140505
 # DB_PORT=5432
 # DB_NAME=absensi_karyawan
 # DB_USER=postgres
+.venv/
