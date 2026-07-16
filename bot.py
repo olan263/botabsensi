@@ -56,17 +56,17 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # PENTING - KEAMANAN:
 # Token & password TIDAK BOLEH punya nilai default/fallback di source code.
-# Versi sebelumnya sempat hardcode token+password sebagai fallback -> keduanya
-# HARUS dianggap bocor dan WAJIB diganti:
+# Kalau ada token/password yang PERNAH nempel di source code atau ke-screenshot,
+# ANGGAP BOCOR dan WAJIB diganti:
 #   - Token: @BotFather -> /mybots -> pilih bot -> API Token -> Revoke current token
 #   - Password DB: ganti user postgres lewat ALTER ROLE / pgAdmin
-# Bot ini SEKARANG akan menolak start kalau env var belum diisi (lihat di bawah),
-# supaya tidak ada lagi secret yang nempel di source code.
+# Bot ini akan menolak start kalau env var belum diisi (lihat di bawah),
+# supaya tidak ada secret yang nempel di source code.
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError(
         "Environment variable BOT_TOKEN belum diisi. "
-        "Set dulu (token yang BARU, hasil revoke) sebelum menjalankan bot."
+        "Set dulu (token yang BARU, hasil revoke) di file .env sebelum menjalankan bot."
     )
 
 # ID grup Telegram tujuan notifikasi otomatis (real-time tiap ada absen/kegiatan,
@@ -88,7 +88,7 @@ DB_CONFIG = {
 if not DB_CONFIG["password"]:
     raise RuntimeError(
         "Environment variable DB_PASSWORD belum diisi. "
-        "Set dulu (password yang BARU) sebelum menjalankan bot."
+        "Set dulu (password yang BARU) di file .env sebelum menjalankan bot."
     )
 
 # Connection pool kecil (1-5 koneksi) supaya tidak buka-tutup koneksi tiap query
@@ -96,107 +96,39 @@ _db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, **DB_CONFIG)
 
 
 # ==========================================
-# 0b. HELPER DATABASE - MASTER KARYAWAN & VERIFIKASI AR
+# 0b. HELPER DATABASE - MASTER KARYAWAN
 # ==========================================
+# CATATAN: verifikasi identitas di bot ini HANYA berdasarkan Kode Karyawan
+# (tidak ada konfirmasi nama, tidak ada binding ke akun Telegram tertentu).
+# Konsekuensinya: siapa pun yang tahu/menebak sebuah kode bisa absen/lapor
+# kegiatan atas nama kode itu. Kalau butuh proteksi lebih ketat lagi nanti,
+# bisa ditambahkan verifikasi 2 faktor (kode + nama + ikat ke 1 akun Telegram).
 
-def _cari_karyawan_by_kode_sync(kode):
-    """Return (nama, telegram_id) kalau kode ketemu, atau None."""
+def _cari_nama_karyawan_sync(kode):
+    """Return nama (str) kalau kode ketemu di tabel karyawan, atau None."""
     conn = _db_pool.getconn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT nama, telegram_id FROM karyawan WHERE kode = %s", (kode,))
-            return cur.fetchone()
+            cur.execute("SELECT nama FROM karyawan WHERE kode = %s", (kode,))
+            hasil = cur.fetchone()
+            return hasil[0] if hasil else None
     finally:
         _db_pool.putconn(conn)
 
 
-async def cari_karyawan_by_kode(kode):
+async def cari_nama_karyawan(kode):
     try:
-        return await asyncio.to_thread(_cari_karyawan_by_kode_sync, kode)
+        return await asyncio.to_thread(_cari_nama_karyawan_sync, kode)
     except Exception as e:
         logger.error(f"Gagal query karyawan by kode: {e}")
         return None
 
 
-def _cari_kode_by_telegram_id_sync(telegram_id):
-    """Return (kode, nama) kalau telegram_id ini sudah terikat ke suatu AR, atau None."""
-    conn = _db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT kode, nama FROM karyawan WHERE telegram_id = %s", (telegram_id,))
-            return cur.fetchone()
-    finally:
-        _db_pool.putconn(conn)
-
-
-async def cari_kode_by_telegram_id(telegram_id):
-    try:
-        return await asyncio.to_thread(_cari_kode_by_telegram_id_sync, telegram_id)
-    except Exception as e:
-        logger.error(f"Gagal query kode by telegram_id: {e}")
-        return None
-
-
-def _bind_telegram_id_sync(kode, telegram_id):
-    """Ikat telegram_id ke kode HANYA kalau kode itu belum terikat ke siapa pun
-    (telegram_id IS NULL). Return True kalau berhasil diikat."""
-    conn = _db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE karyawan SET telegram_id = %s WHERE kode = %s AND telegram_id IS NULL",
-                (telegram_id, kode),
-            )
-            berhasil = cur.rowcount > 0
-        conn.commit()
-        return berhasil
-    finally:
-        _db_pool.putconn(conn)
-
-
-async def bind_telegram_id(kode, telegram_id):
-    try:
-        return await asyncio.to_thread(_bind_telegram_id_sync, kode, telegram_id)
-    except Exception as e:
-        logger.error(f"Gagal bind telegram_id: {e}")
-        return False
-
-
-async def verifikasi_identitas_ar(kode_input, nama_input, telegram_id):
-    """Validasi 2 faktor (kode + nama) sekaligus sinkronisasi dengan telegram_id.
-    - Kode/nama tidak cocok di database -> ditolak.
-    - Kode belum pernah diikat ke akun manapun -> otomatis diikat ke telegram_id ini
-      (pendaftaran otomatis saat pemakaian pertama kali).
-    - Kode sudah diikat ke akun telegram lain -> ditolak.
-    Return (ok, pesan_error, nama_valid, kode_valid)."""
-    kode = kode_input.strip().upper()
-    row = await cari_karyawan_by_kode(kode)
-    if row is None:
-        return False, "kode karyawan tidak ditemukan di database", None, None
-
-    nama_db, telegram_id_terikat = row
-    if nama_input.strip().lower() != nama_db.strip().lower():
-        return False, "nama tidak cocok dengan kode yang dimasukkan", None, None
-
-    if telegram_id_terikat is None:
-        berhasil = await bind_telegram_id(kode, telegram_id)
-        if not berhasil:
-            return False, "gagal memverifikasi akun, silakan coba lagi", None, None
-        return True, None, nama_db, kode
-
-    if telegram_id_terikat != telegram_id:
-        return False, "kode ini sudah terdaftar dengan akun Telegram lain, hubungi admin", None, None
-
-    return True, None, nama_db, kode
-
-
 async def _cek_akses_rekap(update: Update):
-    """Rekap manual boleh diakses dari grup notifikasi resmi, atau oleh AR yang
-    telegram_id-nya sudah terverifikasi (pernah /absen atau /kegiatan sukses)."""
-    if GROUP_CHAT_ID_INT is not None and update.effective_chat.id == GROUP_CHAT_ID_INT:
-        return True
-    row = await cari_kode_by_telegram_id(update.effective_user.id)
-    return row is not None
+    """Rekap manual (/rekapabsen, /rekapkegiatan) HANYA boleh diakses dari
+    dalam grup notifikasi resmi. Ini karena tanpa binding akun per-AR, tidak
+    ada cara membedakan AR terverifikasi dari orang random di chat pribadi."""
+    return GROUP_CHAT_ID_INT is not None and update.effective_chat.id == GROUP_CHAT_ID_INT
 
 
 def _simpan_absensi_sync(tanggal, kode, nama, tag_lokasi, foto, rencana_kegiatan, jam_absen, status):
@@ -616,15 +548,15 @@ async def _download_foto_dari_pesan(update: Update, prefix: str):
 # 3. STATE CONVERSATION HANDLER
 # ==========================================
 (
-    ABSEN_KODE, ABSEN_NAMA, ABSEN_STATUS, ABSEN_PILIH_KANTOR, ABSEN_LOKASI, ABSEN_FOTO,
+    ABSEN_KODE, ABSEN_STATUS, ABSEN_PILIH_KANTOR, ABSEN_LOKASI, ABSEN_FOTO,
     ABSEN_RENCANA, ABSEN_IZIN_KETERANGAN, ABSEN_IZIN_TAMBAH_FOTO, ABSEN_IZIN_FOTO,
-) = range(10)
+) = range(9)
 
 (
-    KEG_KODE, KEG_NAMA_VERIFIKASI, KEG_NAMA_KEGIATAN, KEG_LOKASI, KEG_FOTO, KEG_HASIL,
+    KEG_KODE, KEG_NAMA_KEGIATAN, KEG_LOKASI, KEG_FOTO, KEG_HASIL,
     KEG_STATUS_DEAL, KEG_PAKET, KEG_NOHP, KEG_PIC, KEG_JABATAN,
     KEG_RINGKASAN_AKSI, KEG_PILIH_EDIT,
-) = range(13)
+) = range(9, 21)
 
 
 # ---------- ALUR ABSEN MASUK ----------
@@ -638,25 +570,20 @@ async def absen_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def absen_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["kode_input"] = update.message.text.strip()
-    await update.message.reply_text("Masukkan Nama Lengkap Anda (sesuai data karyawan):")
-    return ABSEN_NAMA
+    kode = update.message.text.strip().upper()
 
-
-async def absen_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nama_input = update.message.text.strip()
-    kode_input = context.user_data.get("kode_input", "")
-    telegram_id = update.effective_user.id
-
-    ok, pesan_error, nama_valid, kode_valid = await verifikasi_identitas_ar(kode_input, nama_input, telegram_id)
-    if not ok:
+    nama = await cari_nama_karyawan(kode)
+    if nama is None:
         await update.message.reply_text(
-            f"❌ Verifikasi gagal: {pesan_error}.\n\n➡️ Ketik /absen untuk mencoba lagi."
+            f"❌ Kode karyawan '{escape_markdown(kode)}' tidak ditemukan di database.\n"
+            "Mohon cek kembali kode Anda, atau hubungi admin.\n\n"
+            "➡️ Ketik /absen lagi untuk mencoba dari awal.",
+            parse_mode="Markdown",
         )
         return ConversationHandler.END
 
     tanggal = _tanggal_hari_ini()
-    sudah_absen = await cek_sudah_absen(tanggal, kode_valid)
+    sudah_absen = await cek_sudah_absen(tanggal, kode)
     if sudah_absen is not None:
         _, status_lama = sudah_absen
         await update.message.reply_text(
@@ -667,8 +594,8 @@ async def absen_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    context.user_data["kode"] = kode_valid
-    context.user_data["nama"] = nama_valid
+    context.user_data["kode"] = kode
+    context.user_data["nama"] = nama
 
     tombol_status = InlineKeyboardMarkup(
         [
@@ -680,7 +607,7 @@ async def absen_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     )
     await update.message.reply_text(
-        f"Halo, *{escape_markdown(nama_valid)}*! 👋\n\n"
+        f"Halo, *{escape_markdown(nama)}*! 👋\n\n"
         "Silakan pilih status kehadiran Anda hari ini (tap tombol di bawah):",
         parse_mode="Markdown",
         reply_markup=tombol_status,
@@ -925,33 +852,19 @@ async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def keg_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["kode_input"] = update.message.text.strip()
-    await update.message.reply_text("Masukkan Nama Lengkap Anda (sesuai data karyawan):")
-    return KEG_NAMA_VERIFIKASI
-
-
-async def keg_nama_verifikasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nama_input = update.message.text.strip()
-    kode_input = context.user_data.get("kode_input", "")
-    telegram_id = update.effective_user.id
-
-    ok, pesan_error, nama_valid, kode_valid = await verifikasi_identitas_ar(kode_input, nama_input, telegram_id)
-    if not ok:
-        await update.message.reply_text(
-            f"❌ Verifikasi gagal: {pesan_error}.\n\n➡️ Ketik /kegiatan untuk mencoba lagi."
-        )
-        return ConversationHandler.END
-
+    kode = update.message.text.strip().upper()
     tanggal = _tanggal_hari_ini()
-    hasil = await cek_sudah_absen(tanggal, kode_valid)
+
+    hasil = await cek_sudah_absen(tanggal, kode)
     if hasil is None:
         await update.message.reply_text(
-            "❌ Anda BELUM melakukan absen masuk HARI INI! Silakan /absen terlebih dahulu.\n\n"
+            "❌ Anda BELUM melakukan absen masuk HARI INI (atau kode tidak ditemukan)! "
+            "Silakan /absen terlebih dahulu.\n\n"
             "➡️ Ketik /absen, lalu setelah selesai baru ketik /kegiatan lagi."
         )
         return ConversationHandler.END
 
-    _, status = hasil
+    nama, status = hasil
     if status in ("Sakit", "Izin"):
         await update.message.reply_text(
             f"❌ Anda tercatat *{escape_markdown(status)}* hari ini, sehingga tidak bisa mengisi laporan kegiatan.\n"
@@ -960,10 +873,10 @@ async def keg_nama_verifikasi(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return ConversationHandler.END
 
-    context.user_data["kode"] = kode_valid
-    context.user_data["nama"] = nama_valid
+    context.user_data["kode"] = kode
+    context.user_data["nama"] = nama
     context.user_data["tanggal"] = tanggal
-    await update.message.reply_text(f"Halo, {nama_valid}. Masukkan Nama Kegiatan:")
+    await update.message.reply_text(f"Halo, {escape_markdown(nama)}. Masukkan Nama Kegiatan:", parse_mode="Markdown")
     return KEG_NAMA_KEGIATAN
 
 
@@ -1164,7 +1077,6 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     if query.data == "keg_aksi_edit":
-        ud = context.user_data
         daftar_tombol = [
             [InlineKeyboardButton("📌 Nama Kegiatan", callback_data="editf_nama_kegiatan")],
             [InlineKeyboardButton("📍 Lokasi", callback_data="editf_lokasi")],
@@ -1278,24 +1190,15 @@ async def grup_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"ID chat ini: `{update.effective_chat.id}`", parse_mode="Markdown")
 
 
-async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lihat ID Telegram pribadi (berguna kalau admin perlu bind manual lewat SQL)."""
-    await update.message.reply_text(f"ID Telegram Anda: `{update.effective_user.id}`", parse_mode="Markdown")
-
-
 async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Bot Absensi & Kegiatan (khusus AR terdaftar)*\n\n"
-        "/absen - Absen masuk (Hadir/Sakit/Izin)\n"
+        "🤖 *Bot Absensi & Kegiatan*\n\n"
+        "/absen - Absen masuk (Hadir/Sakit/Izin), cukup masukkan Kode Karyawan\n"
         "/kegiatan - Input laporan kegiatan/visit (wajib absen Hadir dulu)\n"
-        "/rekapabsen - Lihat rekap riwayat absensi\n"
-        "/rekapkegiatan - Lihat rekap riwayat kegiatan\n"
-        "/myid - Lihat ID Telegram Anda\n"
+        "/rekapabsen - Lihat rekap riwayat absensi (khusus di grup notifikasi)\n"
+        "/rekapkegiatan - Lihat rekap riwayat kegiatan (khusus di grup notifikasi)\n"
         "/grupid - (setup admin) Lihat ID chat grup ini\n"
-        "/batal - Batalkan proses yang sedang berjalan\n\n"
-        "ℹ️ Saat pertama kali /absen atau /kegiatan, Anda akan diminta memasukkan "
-        "Kode & Nama sesuai data karyawan — akun Telegram Anda otomatis terikat ke kode "
-        "tersebut dan tidak bisa dipakai kode lain setelahnya.",
+        "/batal - Batalkan proses yang sedang berjalan",
         parse_mode="Markdown",
     )
 
@@ -1303,8 +1206,7 @@ async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def rekap_absen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
-            "❌ Anda belum terdaftar sebagai AR di sistem ini.\n"
-            "Silakan /absen atau /kegiatan terlebih dahulu untuk verifikasi kode & nama Anda."
+            "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
         )
         return
 
@@ -1337,8 +1239,7 @@ async def rekap_absen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
-            "❌ Anda belum terdaftar sebagai AR di sistem ini.\n"
-            "Silakan /absen atau /kegiatan terlebih dahulu untuk verifikasi kode & nama Anda."
+            "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
         )
         return
 
@@ -1470,7 +1371,6 @@ def main():
         entry_points=[CommandHandler("absen", absen_mulai)],
         states={
             ABSEN_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_kode)],
-            ABSEN_NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_nama)],
             ABSEN_STATUS: [
                 CallbackQueryHandler(absen_status, pattern="^status_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, absen_status_belum_tap),
@@ -1490,7 +1390,6 @@ def main():
         entry_points=[CommandHandler("kegiatan", kegiatan_mulai)],
         states={
             KEG_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_kode)],
-            KEG_NAMA_VERIFIKASI: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_nama_verifikasi)],
             KEG_NAMA_KEGIATAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_nama_kegiatan)],
             KEG_LOKASI: [MessageHandler(filters.LOCATION, keg_lokasi)],
             KEG_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, keg_foto)],
@@ -1511,7 +1410,6 @@ def main():
     app.add_handler(CommandHandler("rekapabsen", rekap_absen))
     app.add_handler(CommandHandler("rekapkegiatan", rekap_kegiatan))
     app.add_handler(CommandHandler("grupid", grup_id))
-    app.add_handler(CommandHandler("myid", my_id))
     app.add_handler(conv_absen)
     app.add_handler(conv_kegiatan)
     app.add_error_handler(error_handler)
