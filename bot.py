@@ -42,6 +42,9 @@ from telegram.ext import (
     filters,
 )
 from telegram.request import HTTPXRequest
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
