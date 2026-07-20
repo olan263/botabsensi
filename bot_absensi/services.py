@@ -17,7 +17,7 @@ import asyncio
 
 from .config import logger
 from . import db
-from .integrations import gsheet, excel_online
+from .integrations import gsheet, excel_online, gcs
 
 
 def _tugas_background(coro, nama_tugas):
@@ -45,6 +45,8 @@ async def simpan_absensi(tanggal, kode, nama, tag_lokasi, foto, rencana_kegiatan
         excel_online.sync_absensi_ke_excel_online(tanggal, kode, nama, tag_lokasi, rencana_kegiatan, jam_absen, status),
         "sync_absensi_ke_excel_online",
     )
+    if foto:
+        _tugas_background(gcs.upload_foto(foto), "upload_foto_absen_gcs")
 
 
 async def simpan_kegiatan(
@@ -71,3 +73,5 @@ async def simpan_kegiatan(
         ),
         "sync_kegiatan_ke_excel_online",
     )
+    if foto_kegiatan:
+        _tugas_background(gcs.upload_foto(foto_kegiatan), "upload_foto_kegiatan_gcs")

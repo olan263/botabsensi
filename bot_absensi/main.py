@@ -19,6 +19,7 @@ from . import db
 from .config import BOT_TOKEN, logger
 from .integrations.gsheet import init_gsheet
 from .integrations.excel_online import init_excel_online
+from .integrations.gcs import init_gcs
 from .utils.geo import preload_ocr_reader_background
 from .states import (
     ABSEN_STATUS, ABSEN_RENCANA, ABSEN_LOKASI, ABSEN_FOTO, ABSEN_KONFIRMASI,
@@ -99,6 +100,7 @@ def main():
     db.migrasi_schema()
     init_gsheet()
     init_excel_online()
+    init_gcs()
 
     # Preload model OCR di thread terpisah saat startup, supaya bot tidak
     # nge-lag lama pas user PERTAMA kali butuh fallback OCR (EXIF gagal

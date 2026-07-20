@@ -83,6 +83,28 @@ def _url_workbook():
     return f"https://graph.microsoft.com/v1.0/drives/{MS_EXCEL_DRIVE_ID}/items/{MS_EXCEL_ITEM_ID}/workbook"
 
 
+def _hitung_kolom_tabel_excel_online(token, nama_tabel):
+    """Return jumlah kolom tabel yang SUDAH ADA di Excel Online, atau None
+    kalau tabelnya belum ada / gagal dicek."""
+    base = _url_workbook()
+    headers_req = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = requests.get(f"{base}/tables('{nama_tabel}')/columns", headers=headers_req, timeout=15)
+        resp.raise_for_status()
+        return len(resp.json().get("value", []))
+    except Exception as e:
+        logger.warning(f"Gagal cek jumlah kolom tabel '{nama_tabel}': {e}")
+        return None
+
+
+def _hapus_tabel_excel_online(token, nama_tabel):
+    base = _url_workbook()
+    headers_req = {"Authorization": f"Bearer {token}"}
+    resp = requests.delete(f"{base}/tables('{nama_tabel}')", headers=headers_req, timeout=15)
+    resp.raise_for_status()
+    logger.info(f"Tabel '{nama_tabel}' (skema lama/tidak cocok) berhasil dihapus, akan dibuat ulang.")
+
+
 def _buat_worksheet_dan_tabel_excel_online(token, nama_tabel, nama_worksheet, header):
     base = _url_workbook()
     headers_req = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -151,8 +173,27 @@ def init_excel_online():
         nama_tabel_ada = [t["name"] for t in resp.json().get("value", [])]
 
         for nama_tabel, info in DEFINISI_TABEL_EXCEL_ONLINE.items():
+            jumlah_kolom_diharapkan = len(info["header"])
+
             if nama_tabel in nama_tabel_ada:
-                continue
+                jumlah_kolom_sekarang = _hitung_kolom_tabel_excel_online(token, nama_tabel)
+                if jumlah_kolom_sekarang == jumlah_kolom_diharapkan:
+                    continue  # tabel sudah ada dan skemanya sudah cocok, tidak perlu apa-apa
+
+                logger.warning(
+                    f"Tabel '{nama_tabel}' skemanya tidak cocok lagi "
+                    f"(sekarang {jumlah_kolom_sekarang} kolom, seharusnya {jumlah_kolom_diharapkan}). "
+                    "Menghapus & membuat ulang otomatis..."
+                )
+                try:
+                    _hapus_tabel_excel_online(token, nama_tabel)
+                except Exception as e:
+                    logger.error(
+                        f"Gagal menghapus tabel lama '{nama_tabel}': {e}. "
+                        "Sync ke tabel ini akan terus gagal sampai dibenerin manual."
+                    )
+                    continue
+
             logger.info(f"Tabel '{nama_tabel}' belum ditemukan di Excel Online, membuat otomatis...")
             try:
                 _buat_worksheet_dan_tabel_excel_online(

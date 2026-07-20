@@ -58,6 +58,14 @@ GSHEET_CREDENTIALS_FILE = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_FILE", "")
 GSHEET_SPREADSHEET_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
 
 # ==========================================
+# KONFIGURASI GOOGLE CLOUD STORAGE (opsional)
+# ==========================================
+# Backup foto absen/kegiatan ke Cloud Storage. Foto tetap disimpan lokal
+# juga (dipakai buat kirim ke Telegram), ini cuma salinan cadangan di cloud.
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "")
+GCS_CREDENTIALS_FILE = os.environ.get("GCS_CREDENTIALS_FILE", "")
+
+# ==========================================
 # KONFIGURASI EXCEL ONLINE / MICROSOFT 365 (opsional)
 # ==========================================
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "")
@@ -100,7 +108,7 @@ TITIK_LOKASI_RESMI = [
     {"nama": "Cendana", "lat": -6.477439, "lon": 106.839196},
 ]
 
-RADIUS_LOKASI_METER = 100
+RADIUS_LOKASI_METER = 50
 
 DAFTAR_JENIS_KEGIATAN = [
     "Visit",
