@@ -1,0 +1,10 @@
+python-telegram-bot[job-queue]
+python-dotenv
+psycopg2-binary
+Pillow
+easyocr
+requests
+gspread
+google-auth
+openpyxl
+msal

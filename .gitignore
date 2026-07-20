@@ -1,0 +1,6 @@
+service_account.json
+msal_token_cache.bin
+.env
+*.db
+__pycache__/
+*.pyc

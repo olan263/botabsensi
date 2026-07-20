@@ -471,17 +471,16 @@ async def sync_kegiatan_ke_excel_online(
     )
 
 
-def _build_excel_export_sync(tanggal_mulai=None, tanggal_selesai=None):
-    """Bangun 1 file Excel (.xlsx) berisi 2 sheet (Absensi & Kegiatan) dari
-    data yang ada di database saat ini. Kalau tanggal_mulai/tanggal_selesai
-    diisi, hanya data di rentang tanggal itu (inklusif) yang diambil.
+def _build_excel_export_sync(start_date=None, end_date=None):
+    """Bangun 1 file Excel (.xlsx) berisi 2 sheet (Absensi & Kegiatan).
+    Jika start_date & end_date diisi, export hanya untuk rentang tersebut.
     Return path file yang dibuat."""
     wb = Workbook()
 
     ws1 = wb.active
     ws1.title = "Absensi"
     ws1.append(["Tanggal", "Kode", "Nama", "Jam Absen", "Status", "Lokasi"])
-    for row in _ambil_rekap_absensi_sync(tanggal_mulai, tanggal_selesai):
+    for row in _ambil_rekap_absensi_sync(start_date, end_date):
         ws1.append(list(row))
 
     ws2 = wb.create_sheet("Kegiatan")
@@ -489,14 +488,10 @@ def _build_excel_export_sync(tanggal_mulai=None, tanggal_selesai=None):
         "Tanggal", "Kode", "Nama Karyawan", "Nama Kegiatan", "Nama Usaha", "Nama PIC Pelanggan",
         "Jabatan PIC Pelanggan", "No HP PIC Pelanggan", "Status Deal", "Paket",
     ])
-    for row in _ambil_rekap_kegiatan_sync(tanggal_mulai, tanggal_selesai):
+    for row in _ambil_rekap_kegiatan_sync(start_date, end_date):
         ws2.append(list(row))
 
-    if tanggal_mulai and tanggal_selesai:
-        akhiran = f"_{tanggal_mulai}_sd_{tanggal_selesai}"
-    else:
-        akhiran = ""
-    nama_file = f"export_rekap{akhiran}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    nama_file = f"export_rekap_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     path_file = os.path.join(FOLDER_EXPORT, nama_file)
     wb.save(path_file)
     return path_file
@@ -505,12 +500,11 @@ def _build_excel_export_sync(tanggal_mulai=None, tanggal_selesai=None):
 # ==========================================
 # 0b. HELPER DATABASE - MASTER KARYAWAN
 # ==========================================
-# Registrasi awal (kode AR + Telegram ID) mengikat 1 kode karyawan ke 1 akun
-# Telegram tertentu (lewat perintah /daftar). Setelah terdaftar, /absen dan
-# /kegiatan otomatis mengenali kode & nama dari Telegram ID pengirim, jadi
-# tidak perlu ketik kode tiap kali dan orang lain tidak bisa pakai kode yang
-# bukan miliknya. Kalau butuh reset (misal AR ganti HP), admin perlu jalankan
-# manual: UPDATE karyawan SET telegram_id = NULL WHERE kode = '<KODE>';
+# CATATAN: verifikasi identitas di bot ini HANYA berdasarkan Kode Karyawan
+# (tidak ada konfirmasi nama, tidak ada binding ke akun Telegram tertentu).
+# Konsekuensinya: siapa pun yang tahu/menebak sebuah kode bisa absen/lapor
+# kegiatan atas nama kode itu. Kalau butuh proteksi lebih ketat lagi nanti,
+# bisa ditambahkan verifikasi 2 faktor (kode + nama + ikat ke 1 akun Telegram).
 
 def _cari_nama_karyawan_sync(kode):
     """Return nama (str) kalau kode ketemu di tabel karyawan, atau None."""
@@ -532,80 +526,6 @@ async def cari_nama_karyawan(kode):
         return None
 
 
-def _migrasi_schema_sync():
-    """Nambahin kolom yang dibutuhkan fitur baru kalau belum ada, supaya
-    deployment lama tidak perlu migrasi manual. Aman dipanggil berkali-kali."""
-    conn = _db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("ALTER TABLE karyawan ADD COLUMN IF NOT EXISTS telegram_id BIGINT")
-            cur.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS karyawan_telegram_id_key "
-                "ON karyawan (telegram_id) WHERE telegram_id IS NOT NULL"
-            )
-            cur.execute("ALTER TABLE kegiatan ADD COLUMN IF NOT EXISTS nama_usaha TEXT")
-        conn.commit()
-        logger.info("Migrasi schema database selesai dicek/dijalankan.")
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Gagal migrasi schema database: {e}")
-    finally:
-        _db_pool.putconn(conn)
-
-
-def _cari_kode_by_telegram_id_sync(telegram_id):
-    """Return (kode, nama) kalau telegram_id ini sudah terdaftar, atau None kalau belum."""
-    conn = _db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT kode, nama FROM karyawan WHERE telegram_id = %s", (telegram_id,))
-            return cur.fetchone()
-    finally:
-        _db_pool.putconn(conn)
-
-
-async def cari_kode_by_telegram_id(telegram_id):
-    try:
-        return await asyncio.to_thread(_cari_kode_by_telegram_id_sync, telegram_id)
-    except Exception as e:
-        logger.error(f"Gagal query karyawan by telegram_id: {e}")
-        return None
-
-
-def _daftar_telegram_id_sync(kode, telegram_id):
-    """Ikat telegram_id ke kode karyawan. Return salah satu:
-    "ok" (berhasil), "kode_tidak_ada", "kode_sudah_dipakai" (kode itu sudah
-    diikat ke telegram_id lain), "sudah_terdaftar" (telegram_id ini sudah
-    diikat ke kode lain sebelumnya)."""
-    conn = _db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT telegram_id FROM karyawan WHERE kode = %s", (kode,))
-            hasil = cur.fetchone()
-            if hasil is None:
-                return "kode_tidak_ada"
-            if hasil[0] is not None and hasil[0] != telegram_id:
-                return "kode_sudah_dipakai"
-
-            cur.execute("SELECT kode FROM karyawan WHERE telegram_id = %s", (telegram_id,))
-            hasil_lain = cur.fetchone()
-            if hasil_lain is not None and hasil_lain[0] != kode:
-                return "sudah_terdaftar"
-
-            cur.execute("UPDATE karyawan SET telegram_id = %s WHERE kode = %s", (telegram_id, kode))
-        conn.commit()
-        return "ok"
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        _db_pool.putconn(conn)
-
-
-async def daftar_telegram_id(kode, telegram_id):
-    return await asyncio.to_thread(_daftar_telegram_id_sync, kode, telegram_id)
-
-
 async def _cek_akses_rekap(update: Update):
     """Rekap manual (/rekapabsen, /rekapkegiatan) HANYA boleh diakses dari
     dalam grup notifikasi resmi. Ini karena tanpa binding akun per-AR, tidak
@@ -621,7 +541,7 @@ def _simpan_absensi_sync(tanggal, kode, nama, tag_lokasi, foto, rencana_kegiatan
             cur.execute(
                 """
                 INSERT INTO absensi (tanggal, kode, nama, tag_lokasi, foto, rencana_kegiatan, jam_absen, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (tanggal, kode) DO UPDATE SET
                     nama = EXCLUDED.nama,
                     tag_lokasi = EXCLUDED.tag_lokasi,
@@ -664,7 +584,7 @@ async def cek_sudah_absen(tanggal, kode):
 
 
 def _simpan_kegiatan_sync(
-    tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
+    tanggal, kode, nama_kegiatan, tag_lokasi, foto_kegiatan, hasil,
     no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
 ):
     conn = _db_pool.getconn()
@@ -675,7 +595,7 @@ def _simpan_kegiatan_sync(
                 INSERT INTO kegiatan
                     (tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
                      no_hp_pic, nama_pic, jabatan_pic, status_deal, paket)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
                  no_hp_pic, nama_pic, jabatan_pic, status_deal, paket),
@@ -686,13 +606,15 @@ def _simpan_kegiatan_sync(
 
 
 async def simpan_kegiatan(
-    tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
+    tanggal, kode, nama_kegiatan, tag_lokasi, foto_kegiatan, hasil,
     no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
 ):
     await asyncio.to_thread(
-        _simpan_kegiatan_sync, tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
+        _simpan_kegiatan_sync, tanggal, kode, nama_kegiatan, tag_lokasi, foto_kegiatan, hasil,
         no_hp_pic, nama_pic, jabatan_pic, status_deal, paket,
     )
+    # nama_karyawan diambil dari context.user_data["nama"] oleh pemanggil lewat kode di bawah;
+    # di sini kita sync pakai data yang sama seperti yang barusan disimpan ke DB.
     nama_karyawan = await cari_nama_karyawan(kode)
     await sync_kegiatan_ke_sheet(
         tanggal, kode, nama_karyawan, nama_kegiatan, nama_usaha, tag_lokasi, hasil,
@@ -704,74 +626,68 @@ async def simpan_kegiatan(
     )
 
 
-def _ambil_rekap_absensi_sync(tanggal_mulai=None, tanggal_selesai=None):
-    """Ambil riwayat absensi dari database untuk /rekapabsen (atau export).
-    Kalau tanggal_mulai & tanggal_selesai diisi, dibatasi ke rentang itu (inklusif)."""
+def _ambil_rekap_absensi_sync(start_date=None, end_date=None):
+    """Ambil riwayat absensi dari database untuk /rekapabsen atau /exportexcel"""
     conn = _db_pool.getconn()
     try:
         with conn.cursor() as cur:
-            if tanggal_mulai and tanggal_selesai:
-                cur.execute(
-                    """
-                    SELECT tanggal, kode, nama, jam_absen, status, tag_lokasi
-                    FROM absensi
-                    WHERE tanggal BETWEEN %s AND %s
-                    ORDER BY tanggal DESC, kode
-                    """,
-                    (tanggal_mulai, tanggal_selesai),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT tanggal, kode, nama, jam_absen, status, tag_lokasi
-                    FROM absensi
-                    ORDER BY tanggal DESC, kode
-                    """
-                )
+            query = "SELECT tanggal, kode, nama, jam_absen, status, tag_lokasi FROM absensi"
+            params = ()
+            if start_date and end_date:
+                query += " WHERE tanggal >= %s AND tanggal <= %s"
+                params = (start_date, end_date)
+            query += " ORDER BY tanggal DESC, kode"
+            cur.execute(query, params)
             return cur.fetchall()
     finally:
         _db_pool.putconn(conn)
 
 
-async def ambil_rekap_absensi(tanggal_mulai=None, tanggal_selesai=None):
-    return await asyncio.to_thread(_ambil_rekap_absensi_sync, tanggal_mulai, tanggal_selesai)
 
-
-def _ambil_rekap_kegiatan_sync(tanggal_mulai=None, tanggal_selesai=None):
-    """Ambil riwayat kegiatan dari database untuk /rekapkegiatan (atau export).
-    Kalau tanggal_mulai & tanggal_selesai diisi, dibatasi ke rentang itu (inklusif)."""
+def _simpan_karyawan_sync(kode, nama):
     conn = _db_pool.getconn()
     try:
         with conn.cursor() as cur:
-            if tanggal_mulai and tanggal_selesai:
-                cur.execute(
-                    """
-                    SELECT k.tanggal, k.kode, ky.nama, k.nama_kegiatan, k.nama_usaha, k.nama_pic, k.jabatan_pic,
-                           k.no_hp_pic, k.status_deal, k.paket
-                    FROM kegiatan k
-                    JOIN karyawan ky ON k.kode = ky.kode
-                    WHERE k.tanggal BETWEEN %s AND %s
-                    ORDER BY k.tanggal DESC, k.kode
-                    """,
-                    (tanggal_mulai, tanggal_selesai),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT k.tanggal, k.kode, ky.nama, k.nama_kegiatan, k.nama_usaha, k.nama_pic, k.jabatan_pic,
-                           k.no_hp_pic, k.status_deal, k.paket
-                    FROM kegiatan k
-                    JOIN karyawan ky ON k.kode = ky.kode
-                    ORDER BY k.tanggal DESC, k.kode
-                    """
-                )
+            cur.execute(
+                "INSERT INTO karyawan (kode, nama) VALUES (%s, %s) ON CONFLICT (kode) DO UPDATE SET nama = EXCLUDED.nama",
+                (kode, nama)
+            )
+        conn.commit()
+    finally:
+        _db_pool.putconn(conn)
+
+async def simpan_karyawan(kode, nama):
+    await asyncio.to_thread(_simpan_karyawan_sync, kode, nama)
+
+async def ambil_rekap_absensi(start_date=None, end_date=None):
+
+    return await asyncio.to_thread(_ambil_rekap_absensi_sync)
+
+
+def _ambil_rekap_kegiatan_sync(start_date=None, end_date=None):
+    """Ambil riwayat kegiatan dari database untuk /rekapkegiatan atau /exportexcel"""
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            query = """
+                SELECT k.tanggal, k.kode, ky.nama, k.nama_kegiatan, k.nama_usaha, k.nama_pic, k.jabatan_pic,
+                       k.no_hp_pic, k.status_deal, k.paket
+                FROM kegiatan k
+                JOIN karyawan ky ON k.kode = ky.kode
+            """
+            params = ()
+            if start_date and end_date:
+                query += " WHERE k.tanggal >= %s AND k.tanggal <= %s"
+                params = (start_date, end_date)
+            query += " ORDER BY k.tanggal DESC, k.kode"
+            cur.execute(query, params)
             return cur.fetchall()
     finally:
         _db_pool.putconn(conn)
 
 
-async def ambil_rekap_kegiatan(tanggal_mulai=None, tanggal_selesai=None):
-    return await asyncio.to_thread(_ambil_rekap_kegiatan_sync, tanggal_mulai, tanggal_selesai)
+async def ambil_rekap_kegiatan(start_date=None, end_date=None):
+    return await asyncio.to_thread(_ambil_rekap_kegiatan_sync, start_date, end_date)
 
 
 def _ambil_absensi_tanggal_sync(tanggal):
@@ -798,7 +714,7 @@ def _ambil_kegiatan_tanggal_sync(tanggal):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT k.kode, ky.nama, k.nama_kegiatan, k.status_deal, k.paket
+                SELECT k.kode, ky.nama, k.nama_kegiatan, k.nama_usaha, k.status_deal, k.paket
                 FROM kegiatan k
                 JOIN karyawan ky ON k.kode = ky.kode
                 WHERE k.tanggal = %s
@@ -852,8 +768,6 @@ TITIK_LOKASI_RESMI = [
     {"nama": "Ex Plasa Grapari", "lat": -6.3886237759186395, "lon": 106.81892645767132},
     {"nama": "Cendana", "lat": -6.477439, "lon": 106.839196},
 ]
-
-RADIUS_LOKASI_METER = 50
 
 DAFTAR_JENIS_KEGIATAN = [
     "Visit",
@@ -985,19 +899,6 @@ def hitung_jarak_meter(lat1, lon1, lat2, lon2):
     return R * c
 
 
-def cari_kantor_terdekat(lat, lon):
-    """Cari titik lokasi resmi TERDEKAT dari koordinat yang diberikan (tanpa
-    user perlu pilih kantornya sendiri). Return (kantor_dict, jarak_meter)."""
-    terdekat = None
-    jarak_terdekat = None
-    for kantor in TITIK_LOKASI_RESMI:
-        jarak = hitung_jarak_meter(lat, lon, kantor["lat"], kantor["lon"])
-        if jarak_terdekat is None or jarak < jarak_terdekat:
-            jarak_terdekat = jarak
-            terdekat = kantor
-    return terdekat, jarak_terdekat
-
-
 def sensor_nomor_hp(nomor):
     """Menyensor nomor HP, hanya menampilkan 3 digit awal, contoh: 081234567890 -> 081*********"""
     nomor_bersih = re.sub(r"\s+", "", nomor or "")
@@ -1006,31 +907,6 @@ def sensor_nomor_hp(nomor):
     depan = nomor_bersih[:3]
     tengah = "*" * (len(nomor_bersih) - 3)
     return f"{depan}{tengah}"
-
-
-def validasi_no_hp(teks):
-    """Validasi & normalisasi nomor HP PIC pelanggan.
-    - Kosong / '-' / 'tidak ada' dsb -> dianggap tidak diisi, hasilnya "0".
-    - Harus berformat +62xxxxxxxxx atau 08xxxxxxxxx (8-13 digit setelah prefix),
-      kalau tidak sesuai -> return None (artinya tidak valid, minta input ulang).
-    - Hasil valid dinormalisasi ke format 08xxxxxxxxx.
-    """
-    if teks is None:
-        return "0"
-    bersih = teks.strip()
-    if bersih == "" or bersih.lower() in ("-", "0", "tidak ada", "tdk ada", "kosong", "belum ada"):
-        return "0"
-
-    bersih = re.sub(r"[\s\-]", "", bersih)
-
-    if re.fullmatch(r"\+62\d{8,13}", bersih):
-        return "0" + bersih[3:]
-    if re.fullmatch(r"62\d{8,13}", bersih):
-        return "0" + bersih[2:]
-    if re.fullmatch(r"08\d{7,12}", bersih):
-        return bersih
-
-    return None
 
 
 def buat_link_google_maps(lat, lon):
@@ -1119,110 +995,43 @@ async def _download_foto_dari_pesan(update: Update, prefix: str):
 # 3. STATE CONVERSATION HANDLER
 # ==========================================
 (
-    ABSEN_STATUS, ABSEN_RENCANA, ABSEN_LOKASI, ABSEN_FOTO, ABSEN_KONFIRMASI,
-    ABSEN_IZIN_KETERANGAN, ABSEN_IZIN_TAMBAH_FOTO, ABSEN_IZIN_FOTO,
-) = range(8)
+    ABSEN_KODE, ABSEN_STATUS, ABSEN_LOKASI, ABSEN_FOTO,
+    ABSEN_RENCANA, ABSEN_IZIN_KETERANGAN, ABSEN_IZIN_TAMBAH_FOTO, ABSEN_IZIN_FOTO,
+    ABSEN_RINGKASAN_AKSI, ABSEN_PILIH_EDIT,
+) = range(10)
 
 (
-    KEG_NAMA_KEGIATAN, KEG_NAMA_USAHA, KEG_HASIL, KEG_STATUS_DEAL, KEG_PAKET,
-    KEG_NOHP, KEG_PIC, KEG_JABATAN, KEG_LOKASI, KEG_FOTO,
+    KEG_KODE, KEG_NAMA_KEGIATAN, KEG_NAMA_USAHA, KEG_LOKASI, KEG_FOTO, KEG_HASIL,
+    KEG_STATUS_DEAL, KEG_PAKET, KEG_NOHP, KEG_PIC, KEG_JABATAN,
     KEG_RINGKASAN_AKSI, KEG_PILIH_EDIT,
-) = range(8, 20)
+) = range(10, 23)
 
-(REGISTRASI_KODE,) = range(20, 21)
+(REG_KODE, REG_NAMA) = range(23, 25)
 
-
-# ---------- ALUR REGISTRASI AWAL (KODE AR <-> TELEGRAM ID) ----------
-
-async def registrasi_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    telegram_id = update.effective_user.id
-    sudah = await cari_kode_by_telegram_id(telegram_id)
-    if sudah is not None:
-        kode, nama = sudah
-        await update.message.reply_text(
-            f"✅ Akun Telegram Anda sudah terdaftar sebagai *{escape_markdown(nama)}* "
-            f"(Kode: {escape_markdown(kode)}).\n\n"
-            "Kalau ini keliru atau Anda ganti HP, hubungi admin untuk reset.",
-            parse_mode="Markdown",
-        )
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        "📋 *REGISTRASI AWAL*\n"
-        "Masukkan Kode Karyawan (AR) Anda untuk mengikat akun Telegram ini ke kode tsb:",
-        parse_mode="Markdown",
-    )
-    return REGISTRASI_KODE
-
-
-async def registrasi_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kode = update.message.text.strip().upper()
-    telegram_id = update.effective_user.id
-
-    try:
-        status = await daftar_telegram_id(kode, telegram_id)
-    except Exception as e:
-        logger.error(f"Gagal proses registrasi: {e}")
-        await update.message.reply_text("⚠️ Terjadi kesalahan saat registrasi. Coba lagi atau hubungi admin.")
-        return ConversationHandler.END
-
-    if status == "kode_tidak_ada":
-        await update.message.reply_text(
-            f"❌ Kode karyawan '{escape_markdown(kode)}' tidak ditemukan di database.\n"
-            "Mohon cek kembali kode Anda, atau hubungi admin.\n\n"
-            "➡️ Ketik /daftar lagi untuk mencoba dari awal."
-        )
-        return ConversationHandler.END
-
-    if status == "kode_sudah_dipakai":
-        await update.message.reply_text(
-            f"❌ Kode '{escape_markdown(kode)}' sudah terdaftar ke akun Telegram lain.\n"
-            "Kalau ini keliru, hubungi admin."
-        )
-        return ConversationHandler.END
-
-    if status == "sudah_terdaftar":
-        await update.message.reply_text(
-            "❌ Akun Telegram Anda sudah terdaftar dengan kode lain sebelumnya.\n"
-            "Hubungi admin kalau perlu diganti."
-        )
-        return ConversationHandler.END
-
-    nama = await cari_nama_karyawan(kode)
-    await update.message.reply_text(
-        f"✅ Registrasi berhasil! Akun Telegram ini terikat ke *{escape_markdown(nama)}* "
-        f"(Kode: {escape_markdown(kode)}).\n\n"
-        "Sekarang Anda bisa langsung pakai /absen dan /kegiatan tanpa ketik kode lagi.",
-        parse_mode="Markdown",
-    )
-    return ConversationHandler.END
-
-
-async def _pastikan_terdaftar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Helper dipakai di entry point /absen & /kegiatan: cari kode+nama dari
-    telegram_id pengirim. Kalau belum terdaftar, kasih tau untuk /daftar dulu
-    dan return None. Kalau sudah, return (kode, nama)."""
-    telegram_id = update.effective_user.id
-    hasil = await cari_kode_by_telegram_id(telegram_id)
-    if hasil is None:
-        await update.message.reply_text(
-            "❌ Akun Telegram Anda belum terdaftar.\n"
-            "Silakan jalankan /daftar terlebih dahulu (masukkan Kode Karyawan/AR Anda),"
-            " baru bisa pakai /absen dan /kegiatan."
-        )
-        return None
-    return hasil
 
 
 # ---------- ALUR ABSEN MASUK ----------
 
 async def absen_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+    await update.message.reply_text(
+        "📋 *ABSEN MASUK*\nMasukkan Kode Karyawan (AR) Anda:", parse_mode="Markdown"
+    )
+    return ABSEN_KODE
 
-    hasil = await _pastikan_terdaftar(update, context)
-    if hasil is None:
+async def absen_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kode = update.message.text.strip().upper()
+
+    nama = await cari_nama_karyawan(kode)
+    if nama is None:
+        await update.message.reply_text(
+            f"❌ Kode karyawan '{escape_markdown(kode)}' tidak ditemukan di database.\n"
+            "Mohon cek kembali kode Anda, atau hubungi admin.\n\n"
+            "Atau gunakan /register untuk mendaftar jika Anda karyawan baru.\n"
+            "➡️ Ketik /absen lagi untuk mencoba dari awal.",
+            parse_mode="Markdown",
+        )
         return ConversationHandler.END
-    kode, nama = hasil
 
     tanggal = _tanggal_hari_ini()
     sudah_absen = await cek_sudah_absen(tanggal, kode)
@@ -1256,179 +1065,40 @@ async def absen_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ABSEN_STATUS
 
-
 async def absen_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dipanggil saat user TAP salah satu tombol inline (Hadir/Sakit/Izin)."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_reply_markup(reply_markup=None)  # hilangkan tombol biar ga bisa di-tap ulang
-
-    pilihan = query.data  # "status_hadir" / "status_sakit" / "status_izin"
-
-    if pilihan == "status_hadir":
-        await query.message.reply_text(
-            "✅ Status dipilih: *Hadir*\n\nMasukkan Rencana Kegiatan Hari Ini:",
-            parse_mode="Markdown",
-        )
-        return ABSEN_RENCANA
-
-    status_manual = "Sakit" if pilihan == "status_sakit" else "Izin"
-    context.user_data["status_manual"] = status_manual
-    await query.message.reply_text(
-        f"✅ Status dipilih: *{status_manual}*\n\nMasukkan keterangan/alasan {status_manual.lower()} Anda:",
-        parse_mode="Markdown",
-    )
-    return ABSEN_IZIN_KETERANGAN
-
-
-async def absen_status_belum_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fallback kalau user ngetik teks biasa alih-alih tap tombol."""
-    await update.message.reply_text(
-        "Mohon tap salah satu tombol di atas ya (✅ Hadir / 🤒 Sakit / 📄 Izin), bukan ketik teks."
-    )
-    return ABSEN_STATUS
-
-
-async def absen_rencana(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["rencana_kegiatan"] = update.message.text.strip()
-
-    if context.user_data.get("mode_edit"):
-        context.user_data["mode_edit"] = False
-        return await absen_tampilkan_ringkasan(update, context)
-
-    tombol_lokasi = ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 Kirim Lokasi Saya Sekarang", request_location=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await update.message.reply_text(
-        f"📍 Sekarang share lokasi GPS Anda (harus dalam radius {RADIUS_LOKASI_METER} meter "
-        "dari salah satu titik kantor resmi):",
-        reply_markup=tombol_lokasi,
-    )
-    return ABSEN_LOKASI
-
-
-async def absen_izin_keterangan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["keterangan_izin"] = update.message.text.strip()
-    tombol_foto = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📸 Ya, lampirkan foto", callback_data="izinfoto_ya")],
-            [InlineKeyboardButton("Tidak, lewati", callback_data="izinfoto_tidak")],
-        ]
-    )
-    await update.message.reply_text(
-        "Ingin melampirkan foto bukti (opsional)?", reply_markup=tombol_foto
-    )
-    return ABSEN_IZIN_TAMBAH_FOTO
-
-
-async def absen_izin_tambah_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
 
-    if query.data == "izinfoto_tidak":
-        return await _simpan_dan_selesai_izin(query.message, context, foto_path=None)
+    pilihan = query.data
 
-    await query.message.reply_text("Silakan kirim FOTO bukti:")
-    return ABSEN_IZIN_FOTO
+    if pilihan == "status_hadir":
+        jam_sekarang = datetime.now().time()
+        batas_telat = datetime.strptime("11:00", "%H:%M").time()
+        status_absen = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
+        context.user_data["status_manual"] = status_absen
+        
+        await query.message.reply_text("Masukkan Rencana Kegiatan Hari Ini:")
+        return ABSEN_RENCANA
 
+    status_manual = "Sakit" if pilihan == "status_sakit" else "Izin"
+    context.user_data["status_manual"] = status_manual
+    await query.message.reply_text(f"Masukkan keterangan/alasan {status_manual.lower()} Anda:")
+    return ABSEN_IZIN_KETERANGAN
 
-async def absen_izin_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    path_foto = await _download_foto_dari_pesan(update, f"izin_{context.user_data.get('kode', 'x')}")
-    if path_foto is None:
-        await update.message.reply_text("Mohon kirim dalam bentuk FOTO atau File gambar ya.")
-        return ABSEN_IZIN_FOTO
-    return await _simpan_dan_selesai_izin(update.message, context, foto_path=path_foto)
+async def absen_status_belum_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Mohon tap salah satu tombol di atas ya (✅ Hadir / 🤒 Sakit / 📄 Izin), bukan ketik teks.")
+    return ABSEN_STATUS
 
-
-async def _simpan_dan_selesai_izin(target_pesan, context, foto_path):
-    """target_pesan: objek dengan .reply_text/.reply_photo -> bisa update.message
-    atau query.message tergantung dari mana alurnya masuk."""
-    status_final = context.user_data["status_manual"]
-    kode = context.user_data["kode"]
-    nama = context.user_data["nama"]
-    keterangan = context.user_data["keterangan_izin"]
-    tanggal = _tanggal_hari_ini()
-
-    try:
-        await simpan_absensi(
-            tanggal, kode, nama, None, foto_path, keterangan,
-            datetime.now().strftime("%H:%M"), status_final,
-        )
-    except Exception as e:
-        logger.error(f"Gagal simpan absensi (sakit/izin) ke database: {e}")
-        await target_pesan.reply_text(
-            "⚠️ Terjadi kesalahan saat menyimpan data ke database. Coba lagi atau hubungi admin.",
-        )
-        return ConversationHandler.END
-
-    emoji_status = "🤒" if status_final == "Sakit" else "📄"
-    await target_pesan.reply_text(
-        f"✅ Absen tercatat sebagai *{escape_markdown(status_final)}*.\nKeterangan: {escape_markdown(keterangan)}",
-        parse_mode="Markdown",
-    )
-
-    caption = (
-        f"{emoji_status} {status_final.upper()}\n\n"
-        f"👤 {nama} ({kode})\n"
-        f"🕒 {datetime.now().strftime('%H:%M')}\n"
-        f"📝 Keterangan: {keterangan}"
-    )
-    if foto_path:
-        await kirim_notifikasi_grup(context, caption, foto_path)
-    else:
-        await kirim_notifikasi_grup_teks(context, caption)
-
-    return ConversationHandler.END
-
-
-async def absen_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.location:
-        await update.message.reply_text(
-            "Mohon share lokasi lewat tombol 📍 yang tersedia, bukan ketik teks."
-        )
-        return ABSEN_LOKASI
-
-    lat = update.message.location.latitude
-    lon = update.message.location.longitude
-    kantor, jarak = cari_kantor_terdekat(lat, lon)
-
-    if jarak > RADIUS_LOKASI_METER:
-        tombol_lokasi = ReplyKeyboardMarkup(
-            [[KeyboardButton("📍 Kirim Lokasi Saya Sekarang", request_location=True)]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await update.message.reply_text(
-            f"❌ Lokasi Anda berjarak {jarak:.1f} meter dari titik kantor terdekat "
-            f"(*{escape_markdown(kantor['nama'])}*), di luar radius {RADIUS_LOKASI_METER} meter.\n\n"
-            "📍 Silakan pindah ke lokasi yang benar, lalu kirim ulang lokasi lewat tombol di bawah.",
-            parse_mode="Markdown",
-            reply_markup=tombol_lokasi,
-        )
-        return ABSEN_LOKASI
-
-    context.user_data["tag_lokasi"] = f"{kantor['nama']} ({jarak:.1f} meter)"
-
+async def absen_rencana(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["rencana_kegiatan"] = update.message.text.strip()
+    
     if context.user_data.get("mode_edit"):
         context.user_data["mode_edit"] = False
-        await update.message.reply_text(
-            f"✅ Lokasi diperbarui: *{escape_markdown(kantor['nama'])}* ({jarak:.1f} m)",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardRemove(),
-        )
         return await absen_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text(
-        f"✅ Lokasi tervalidasi: *{escape_markdown(kantor['nama'])}* ({jarak:.1f} m dari titik resmi)\n\n"
-        "📸 Sekarang kirim FOTO sebagai bukti kehadiran Anda:",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    await update.message.reply_text("📸 Silakan kirim FOTO sebagai bukti kehadiran Anda:")
     return ABSEN_FOTO
-
 
 async def absen_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path_foto = await _download_foto_dari_pesan(update, f"absen_{context.user_data.get('kode', 'x')}")
@@ -1442,34 +1112,58 @@ async def absen_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await absen_tampilkan_ringkasan(update, context)
 
+    tombol_lokasi = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Kirim Lokasi Saya Sekarang", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        "📍 Sekarang share lokasi GPS Anda:",
+        parse_mode="Markdown",
+        reply_markup=tombol_lokasi,
+    )
+    return ABSEN_LOKASI
+
+async def absen_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.location:
+        await update.message.reply_text("Mohon share lokasi lewat tombol 📍 yang tersedia, bukan ketik teks.")
+        return ABSEN_LOKASI
+
+    lat = update.message.location.latitude
+    lon = update.message.location.longitude
+    link_maps = buat_link_google_maps(lat, lon)
+    alamat = await reverse_geocode(lat, lon)
+    context.user_data["tag_lokasi"] = f"{alamat} ({link_maps})" if alamat else link_maps
+
+    if context.user_data.get("mode_edit"):
+        context.user_data["mode_edit"] = False
+        await update.message.reply_text(f"✅ Lokasi diperbarui.\n📍 {link_maps}", reply_markup=ReplyKeyboardRemove())
+        return await absen_tampilkan_ringkasan(update, context)
+
+    await update.message.reply_text(f"✅ Lokasi tersimpan.\n📍 {link_maps}", reply_markup=ReplyKeyboardRemove())
     return await absen_tampilkan_ringkasan(update, context)
 
-
 def _teks_ringkasan_absen(ud, judul):
-    jam_sekarang = datetime.now().time()
-    batas_telat = datetime.strptime("11:00", "%H:%M").time()
-    status_preview = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
     return (
         f"{judul}\n\n"
-        f"👤 Nama: {ud.get('nama')} ({ud.get('kode')})\n"
-        f"📝 Rencana: {ud.get('rencana_kegiatan')}\n"
-        f"📍 Lokasi: {ud.get('tag_lokasi')}\n"
-        f"🕒 Status: {status_preview}"
+        f"👤 {ud.get('nama')} ({ud.get('kode')})\n"
+        f"📝 Status: {ud.get('status_manual')}\n"
+        f"📋 Rencana: {ud.get('rencana_kegiatan')}\n"
+        f"📍 Lokasi: {ud.get('tag_lokasi')}"
     )
-
 
 async def absen_tampilkan_ringkasan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.user_data
-    ringkasan = _teks_ringkasan_absen(ud, "📋 KONFIRMASI DATA ABSEN") + "\n\nMohon cek lagi, apakah data di atas sudah benar?"
-
+    ringkasan = _teks_ringkasan_absen(ud, "📋 KONFIRMASI DATA ABSENSI") + "\n\nMohon cek lagi, apakah data di atas sudah benar?"
+    
     tombol = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("✏️ Edit Rencana", callback_data="absenaksi_edit_rencana")],
-            [InlineKeyboardButton("✅ Ya, Simpan & Kirim", callback_data="absenaksi_submit")],
-            [InlineKeyboardButton("❌ Batalkan", callback_data="absenaksi_batal")],
+            [InlineKeyboardButton("✏️ Edit", callback_data="abs_aksi_edit")],
+            [InlineKeyboardButton("✅ Ya, Submit", callback_data="abs_aksi_submit")],
+            [InlineKeyboardButton("❌ Batalkan", callback_data="abs_aksi_batal")],
         ]
     )
-
+    
     target = update.callback_query.message if update.callback_query else update.message
     foto = ud.get("foto")
 
@@ -1477,147 +1171,191 @@ async def absen_tampilkan_ringkasan(update: Update, context: ContextTypes.DEFAUL
         try:
             with open(foto, "rb") as f:
                 await target.reply_photo(photo=f, caption=ringkasan, reply_markup=tombol)
-            return ABSEN_KONFIRMASI
+            return ABSEN_RINGKASAN_AKSI
         except Exception as e:
-            logger.warning(f"Gagal lampirkan foto di ringkasan absen, fallback ke teks saja: {e}")
+            logger.warning(f"Gagal lampirkan foto di ringkasan absen: {e}")
 
     await target.reply_text(ringkasan, reply_markup=tombol)
-    return ABSEN_KONFIRMASI
+    return ABSEN_RINGKASAN_AKSI
 
-
-async def absen_konfirmasi_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def absen_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
 
-    if query.data == "absenaksi_batal":
-        await query.message.reply_text(
-            "❌ Absen dibatalkan. Ketik /absen untuk mulai ulang dari awal."
-        )
+    if query.data == "abs_aksi_batal":
+        await query.message.reply_text("❌ Absen dibatalkan. Ketik /absen untuk mulai ulang.")
         context.user_data.clear()
         return ConversationHandler.END
 
-    if query.data == "absenaksi_edit_rencana":
-        context.user_data["mode_edit"] = True
-        await query.message.reply_text("Masukkan Rencana Kegiatan yang baru:")
-        return ABSEN_RENCANA
+    if query.data == "abs_aksi_edit":
+        daftar_tombol = [
+            [InlineKeyboardButton("📋 Rencana", callback_data="edita_rencana")],
+            [InlineKeyboardButton("📸 Foto", callback_data="edita_foto")],
+            [InlineKeyboardButton("📍 Lokasi", callback_data="edita_lokasi")],
+        ]
+        await query.message.reply_text("Pilih data yang ingin diedit:", reply_markup=InlineKeyboardMarkup(daftar_tombol))
+        return ABSEN_PILIH_EDIT
 
-    # query.data == "absenaksi_submit"
+    # Submit
     ud = context.user_data
     kode = ud["kode"]
-
-    jam_sekarang = datetime.now().time()
-    batas_telat = datetime.strptime("11:00", "%H:%M").time()
-    status_absen = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
     tanggal = _tanggal_hari_ini()
+    jam_absen = datetime.now().strftime("%H:%M")
 
     try:
         await simpan_absensi(
-            tanggal, kode, ud["nama"], ud["tag_lokasi"], ud["foto"], ud["rencana_kegiatan"],
-            datetime.now().strftime("%H:%M"), status_absen,
+            tanggal, kode, ud["nama"], ud["tag_lokasi"], ud["foto"],
+            ud["rencana_kegiatan"], jam_absen, ud["status_manual"]
         )
     except Exception as e:
         logger.error(f"Gagal simpan absensi ke database: {e}")
-        await query.message.reply_text(
-            "⚠️ Terjadi kesalahan saat menyimpan absen ke database. Coba lagi atau hubungi admin.",
-        )
+        await query.message.reply_text("⚠️ Terjadi kesalahan saat menyimpan absen ke database.")
         return ConversationHandler.END
 
-    caption = (
-        "✅ ABSEN MASUK\n\n"
-        f"👤 {ud['nama']} ({kode})\n"
-        f"🕒 {datetime.now().strftime('%H:%M')} — {status_absen}\n"
-        f"📍 {ud['tag_lokasi']}\n"
-        f"📝 Rencana: {ud['rencana_kegiatan']}"
-    )
-
-    await query.message.reply_text(caption)
-    await kirim_notifikasi_grup(context, caption, ud["foto"])
-
+    ringkasan_final = _teks_ringkasan_absen(ud, "✅ ABSEN MASUK BERHASIL") + f"\n🕒 {jam_absen}"
+    await query.message.reply_text(ringkasan_final)
+    await kirim_notifikasi_grup(context, ringkasan_final, ud["foto"])
     context.user_data.clear()
     return ConversationHandler.END
 
+async def absen_pilih_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    context.user_data["mode_edit"] = True
+    field = query.data.split("_", 1)[1]
+
+    if field == "rencana":
+        await query.message.reply_text("Masukkan Rencana Kegiatan yang baru:")
+        return ABSEN_RENCANA
+    if field == "foto":
+        await query.message.reply_text("Kirim FOTO yang baru:")
+        return ABSEN_FOTO
+    if field == "lokasi":
+        tombol_lokasi = ReplyKeyboardMarkup([[KeyboardButton("📍 Kirim Lokasi", request_location=True)]], resize_keyboard=True, one_time_keyboard=True)
+        await query.message.reply_text("Share lokasi yang baru:", reply_markup=tombol_lokasi)
+        return ABSEN_LOKASI
+
+    return await absen_tampilkan_ringkasan(update, context)
+
+# SAkIT / IZIN LOGIC (Unchanged mostly)
+async def absen_izin_keterangan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["keterangan_izin"] = update.message.text.strip()
+    tombol_foto = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 Ya, lampirkan foto", callback_data="izinfoto_ya")],
+        [InlineKeyboardButton("Tidak, lewati", callback_data="izinfoto_tidak")],
+    ])
+    await update.message.reply_text("Ingin melampirkan foto bukti (opsional)?", reply_markup=tombol_foto)
+    return ABSEN_IZIN_TAMBAH_FOTO
+
+async def absen_izin_tambah_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    if query.data == "izinfoto_tidak":
+        return await _simpan_dan_selesai_izin(query.message, context, foto_path=None)
+
+    await query.message.reply_text("Silakan kirim FOTO bukti:")
+    return ABSEN_IZIN_FOTO
+
+async def absen_izin_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    path_foto = await _download_foto_dari_pesan(update, f"izin_{context.user_data.get('kode', 'x')}")
+    if path_foto is None:
+        await update.message.reply_text("Mohon kirim dalam bentuk FOTO atau File gambar ya.")
+        return ABSEN_IZIN_FOTO
+    return await _simpan_dan_selesai_izin(update.message, context, foto_path=path_foto)
+
+async def _simpan_dan_selesai_izin(target_pesan, context, foto_path):
+    status_final = context.user_data["status_manual"]
+    kode = context.user_data["kode"]
+    nama = context.user_data["nama"]
+    keterangan = context.user_data["keterangan_izin"]
+    tanggal = _tanggal_hari_ini()
+
+    try:
+        await simpan_absensi(tanggal, kode, nama, None, foto_path, keterangan, datetime.now().strftime("%H:%M"), status_final)
+    except Exception as e:
+        logger.error(f"Gagal simpan absensi (sakit/izin): {e}")
+        await target_pesan.reply_text("⚠️ Terjadi kesalahan. Coba lagi.")
+        return ConversationHandler.END
+
+    emoji_status = "🤒" if status_final == "Sakit" else "📄"
+    await target_pesan.reply_text(f"✅ Absen tercatat sebagai *{escape_markdown(status_final)}*.\nKeterangan: {escape_markdown(keterangan)}", parse_mode="Markdown")
+
+    caption = (
+        f"{emoji_status} {status_final.upper()}\n\n"
+        f"👤 {nama} ({kode})\n"
+        f"🕒 {datetime.now().strftime('%H:%M')}\n"
+        f"📝 Keterangan: {keterangan}"
+    )
+    if foto_path:
+        await kirim_notifikasi_grup(context, caption, foto_path)
+    else:
+        await kirim_notifikasi_grup_teks(context, caption)
+    return ConversationHandler.END
 
 # ---------- ALUR INPUT KEGIATAN / VISIT ----------
 
 async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+    await update.message.reply_text("📋 *INPUT KEGIATAN / VISIT*\nMasukkan Kode Karyawan (AR) Anda:", parse_mode="Markdown")
+    return KEG_KODE
 
-    hasil_daftar = await _pastikan_terdaftar(update, context)
-    if hasil_daftar is None:
-        return ConversationHandler.END
-    kode, nama = hasil_daftar
-
+async def keg_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kode = update.message.text.strip().upper()
     tanggal = _tanggal_hari_ini()
+
     hasil = await cek_sudah_absen(tanggal, kode)
     if hasil is None:
         await update.message.reply_text(
-            "❌ Anda BELUM melakukan absen masuk HARI INI! Silakan /absen terlebih dahulu.\n\n"
-            "➡️ Ketik /absen, lalu setelah selesai baru ketik /kegiatan lagi."
+            "❌ Anda BELUM melakukan absen masuk HARI INI! Silakan /absen terlebih dahulu."
         )
         return ConversationHandler.END
 
-    _, status = hasil
+    nama, status = hasil
     if status in ("Sakit", "Izin"):
-        await update.message.reply_text(
-            f"❌ Anda tercatat *{escape_markdown(status)}* hari ini, sehingga tidak bisa mengisi laporan kegiatan.\n"
-            "Kalau ini keliru, hubungi admin.",
-            parse_mode="Markdown",
-        )
+        await update.message.reply_text(f"❌ Anda tercatat *{escape_markdown(status)}* hari ini.", parse_mode="Markdown")
         return ConversationHandler.END
 
     context.user_data["kode"] = kode
     context.user_data["nama"] = nama
     context.user_data["tanggal"] = tanggal
 
-    tombol_kegiatan = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(j, callback_data=f"jeniskeg_{i}")] for i, j in enumerate(DAFTAR_JENIS_KEGIATAN)]
-    )
-    await update.message.reply_text(
-        f"Halo, {escape_markdown(nama)}. Pilih Jenis Kegiatan:",
-        parse_mode="Markdown",
-        reply_markup=tombol_kegiatan,
-    )
+    tombol_kegiatan = InlineKeyboardMarkup([[InlineKeyboardButton(j, callback_data=f"jeniskeg_{i}")] for i, j in enumerate(DAFTAR_JENIS_KEGIATAN)])
+    await update.message.reply_text(f"Halo, {escape_markdown(nama)}. Pilih Jenis Kegiatan:", parse_mode="Markdown", reply_markup=tombol_kegiatan)
     return KEG_NAMA_KEGIATAN
 
-
 async def keg_pilih_jenis_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dipanggil saat user TAP salah satu tombol pilihan Jenis Kegiatan."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
 
     idx = int(query.data.split("_", 1)[1])
-    context.user_data["nama_kegiatan"] = DAFTAR_JENIS_KEGIATAN[idx]
-
-    await query.message.reply_text(f"✅ Anda memilih: *{DAFTAR_JENIS_KEGIATAN[idx]}*", parse_mode="Markdown")
+    nama_kegiatan = DAFTAR_JENIS_KEGIATAN[idx]
+    context.user_data["nama_kegiatan"] = nama_kegiatan
 
     if context.user_data.get("mode_edit"):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await query.message.reply_text("🏢 Masukkan Nama Usaha/Toko pelanggan yang dikunjungi:")
+    await query.message.reply_text(f"✅ Anda memilih kegiatan: *{escape_markdown(nama_kegiatan)}*\n\n🏢 Masukkan Nama Usaha / Klien:", parse_mode="Markdown")
     return KEG_NAMA_USAHA
 
-
 async def keg_jenis_kegiatan_belum_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fallback kalau user ngetik teks biasa alih-alih tap tombol pilihan."""
-    await update.message.reply_text(
-        "Mohon tap salah satu tombol pilihan Jenis Kegiatan di atas ya, bukan ketik teks."
-    )
+    await update.message.reply_text("Mohon tap salah satu tombol pilihan.")
     return KEG_NAMA_KEGIATAN
-
 
 async def keg_nama_usaha(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["nama_usaha"] = update.message.text.strip()
-
     if context.user_data.get("mode_edit"):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
-
+    
     await update.message.reply_text("Masukkan Hasil dari Kegiatan:")
     return KEG_HASIL
-
 
 async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["hasil"] = update.message.text.strip()
@@ -1626,15 +1364,12 @@ async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    tombol_deal = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✅ Deal", callback_data="deal_ya")],
-            [InlineKeyboardButton("❌ Belum Deal", callback_data="deal_tidak")],
-        ]
-    )
+    tombol_deal = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Deal", callback_data="deal_ya")],
+        [InlineKeyboardButton("❌ Belum Deal", callback_data="deal_tidak")],
+    ])
     await update.message.reply_text("Bagaimana hasil visit ini?", reply_markup=tombol_deal)
     return KEG_STATUS_DEAL
-
 
 async def keg_status_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1653,11 +1388,8 @@ async def keg_status_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await query.message.reply_text(
-        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' kalau tidak ada):"
-    )
+    await query.message.reply_text("Masukkan No HP PIC Pelanggan:\n*(Awali dengan +62 atau 08. Ketik 0 jika tidak ada)*")
     return KEG_NOHP
-
 
 async def keg_paket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["paket"] = update.message.text.strip()
@@ -1666,22 +1398,17 @@ async def keg_paket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text(
-        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' kalau tidak ada):"
-    )
+    await update.message.reply_text("Masukkan No HP PIC Pelanggan:\n*(Awali dengan +62 atau 08. Ketik 0 jika tidak ada)*")
     return KEG_NOHP
 
-
 async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nomor_valid = validasi_no_hp(update.message.text)
-    if nomor_valid is None:
-        await update.message.reply_text(
-            "❌ Format nomor HP tidak valid. Gunakan format +62xxxxxxxxxx atau 08xxxxxxxxxx "
-            "(tanpa spasi berlebih), atau ketik '-' kalau memang tidak ada."
-        )
-        return KEG_NOHP
+    nohp = update.message.text.strip()
+    if nohp != "0":
+        if not re.match(r"^(?:\+62|08)\d+$", nohp):
+            await update.message.reply_text("❌ Format Nomor HP tidak valid!\nHanya gunakan angka yang diawali dengan +62 atau 08.\n(Ketik 0 jika tidak ada)\n\nSilakan masukkan ulang:")
+            return KEG_NOHP
 
-    context.user_data["no_hp_pic"] = nomor_valid
+    context.user_data["no_hp_pic"] = nohp
 
     if context.user_data.get("mode_edit"):
         context.user_data["mode_edit"] = False
@@ -1689,7 +1416,6 @@ async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Masukkan Nama PIC Pelanggan:")
     return KEG_PIC
-
 
 async def keg_pic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["nama_pic"] = update.message.text.strip()
@@ -1701,54 +1427,15 @@ async def keg_pic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Masukkan Jabatan PIC Pelanggan (contoh: Manager Toko, Owner, Staff, dll):")
     return KEG_JABATAN
 
-
 async def keg_jabatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["jabatan_pic"] = update.message.text.strip()
-
+    
     if context.user_data.get("mode_edit"):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
-
-    tombol_lokasi = ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 Kirim Lokasi Kegiatan Sekarang", request_location=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await update.message.reply_text(
-        "📍 Silakan share lokasi kegiatan (tekan tombol di bawah).\n"
-        "Pastikan Anda sedang berada di lokasi kegiatan saat share.",
-        reply_markup=tombol_lokasi,
-    )
-    return KEG_LOKASI
-
-
-async def keg_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.location:
-        await update.message.reply_text(
-            "Mohon share lokasi lewat tombol 📍 yang tersedia, bukan ketik teks."
-        )
-        return KEG_LOKASI
-
-    lat = update.message.location.latitude
-    lon = update.message.location.longitude
-    link_maps = buat_link_google_maps(lat, lon)
-    alamat = await reverse_geocode(lat, lon)
-    context.user_data["tag_lokasi_kegiatan"] = f"{alamat} ({link_maps})" if alamat else link_maps
-
-    if context.user_data.get("mode_edit"):
-        context.user_data["mode_edit"] = False
-        await update.message.reply_text(
-            f"✅ Lokasi kegiatan diperbarui.\n📍 {link_maps}", reply_markup=ReplyKeyboardRemove()
-        )
-        return await keg_tampilkan_ringkasan(update, context)
-
-    await update.message.reply_text(
-        f"✅ Lokasi kegiatan tersimpan.\n📍 {link_maps}\n\n"
-        "📸 Sekarang kirim FOTO Kegiatan:",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+        
+    await update.message.reply_text("📸 Sekarang kirim FOTO Kegiatan:")
     return KEG_FOTO
-
 
 async def keg_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path_foto = await _download_foto_dari_pesan(update, f"kegiatan_{context.user_data.get('kode', 'x')}")
@@ -1762,8 +1449,32 @@ async def keg_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    return await keg_tampilkan_ringkasan(update, context)
+    tombol_lokasi = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Kirim Lokasi Kegiatan", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text("📍 Silakan share lokasi kegiatan:", reply_markup=tombol_lokasi)
+    return KEG_LOKASI
 
+async def keg_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.location:
+        await update.message.reply_text("Mohon share lokasi lewat tombol 📍 yang tersedia.")
+        return KEG_LOKASI
+
+    lat = update.message.location.latitude
+    lon = update.message.location.longitude
+    link_maps = buat_link_google_maps(lat, lon)
+    alamat = await reverse_geocode(lat, lon)
+    context.user_data["tag_lokasi_kegiatan"] = f"{alamat} ({link_maps})" if alamat else link_maps
+
+    if context.user_data.get("mode_edit"):
+        context.user_data["mode_edit"] = False
+        await update.message.reply_text(f"✅ Lokasi diperbarui.\n📍 {link_maps}", reply_markup=ReplyKeyboardRemove())
+        return await keg_tampilkan_ringkasan(update, context)
+
+    await update.message.reply_text(f"✅ Lokasi tersimpan.\n📍 {link_maps}", reply_markup=ReplyKeyboardRemove())
+    return await keg_tampilkan_ringkasan(update, context)
 
 def _teks_ringkasan_kegiatan(ud, judul):
     status_deal = ud.get("status_deal", "-")
@@ -1771,28 +1482,24 @@ def _teks_ringkasan_kegiatan(ud, judul):
     return (
         f"{judul}\n\n"
         f"📌 Kegiatan: {ud.get('nama_kegiatan')}\n"
-        f"🏢 Nama Usaha: {ud.get('nama_usaha')}\n"
+        f"🏢 Usaha: {ud.get('nama_usaha')}\n"
         f"📝 Hasil: {ud.get('hasil')}\n"
         f"🤝 Status: {status_deal}\n"
         f"{baris_paket}"
-        f"👷 PIC Pelanggan: {ud.get('nama_pic')}\n"
-        f"💼 Jabatan: {ud.get('jabatan_pic')}\n"
+        f"👷 PIC: {ud.get('nama_pic')} ({ud.get('jabatan_pic')})\n"
         f"📱 No HP: {sensor_nomor_hp(ud.get('no_hp_pic'))}\n"
         f"📍 Lokasi: {ud.get('tag_lokasi_kegiatan')}"
     )
-
 
 async def keg_tampilkan_ringkasan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.user_data
     ringkasan = _teks_ringkasan_kegiatan(ud, "📋 KONFIRMASI DATA KEGIATAN") + "\n\nMohon cek lagi, apakah data di atas sudah benar?"
 
-    tombol = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✏️ Edit", callback_data="keg_aksi_edit")],
-            [InlineKeyboardButton("✅ Ya, Simpan & Kirim", callback_data="keg_aksi_submit")],
-            [InlineKeyboardButton("❌ Batalkan", callback_data="keg_aksi_batal")],
-        ]
-    )
+    tombol = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Edit", callback_data="keg_aksi_edit")],
+        [InlineKeyboardButton("✅ Ya, Simpan & Kirim", callback_data="keg_aksi_submit")],
+        [InlineKeyboardButton("❌ Batalkan", callback_data="keg_aksi_batal")],
+    ])
 
     target = update.callback_query.message if update.callback_query else update.message
     foto = ud.get("foto_kegiatan")
@@ -1803,11 +1510,10 @@ async def keg_tampilkan_ringkasan(update: Update, context: ContextTypes.DEFAULT_
                 await target.reply_photo(photo=f, caption=ringkasan, reply_markup=tombol)
             return KEG_RINGKASAN_AKSI
         except Exception as e:
-            logger.warning(f"Gagal lampirkan foto di ringkasan, fallback ke teks saja: {e}")
+            logger.warning(f"Gagal lampirkan foto: {e}")
 
     await target.reply_text(ringkasan, reply_markup=tombol)
     return KEG_RINGKASAN_AKSI
-
 
 async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1815,57 +1521,40 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_reply_markup(reply_markup=None)
 
     if query.data == "keg_aksi_batal":
-        await query.message.reply_text(
-            "❌ Laporan kegiatan dibatalkan. Ketik /kegiatan untuk mulai ulang dari awal."
-        )
+        await query.message.reply_text("❌ Laporan kegiatan dibatalkan. Ketik /kegiatan untuk mulai ulang.")
         context.user_data.clear()
         return ConversationHandler.END
 
     if query.data == "keg_aksi_edit":
         daftar_tombol = [
-            [InlineKeyboardButton("📌 Nama Kegiatan", callback_data="editf_nama_kegiatan")],
-            [InlineKeyboardButton("🏢 Nama Usaha", callback_data="editf_nama_usaha")],
-            [InlineKeyboardButton("📝 Hasil", callback_data="editf_hasil")],
-            [InlineKeyboardButton("🤝 Status Deal", callback_data="editf_status")],
-            [InlineKeyboardButton("📱 No HP PIC", callback_data="editf_nohp")],
-            [InlineKeyboardButton("👷 Nama PIC", callback_data="editf_pic")],
-            [InlineKeyboardButton("💼 Jabatan PIC", callback_data="editf_jabatan")],
+            [InlineKeyboardButton("📌 Kegiatan", callback_data="editf_kegiatan"), InlineKeyboardButton("🏢 Usaha", callback_data="editf_usaha")],
+            [InlineKeyboardButton("📝 Hasil", callback_data="editf_hasil"), InlineKeyboardButton("🤝 Status Deal", callback_data="editf_status")],
+            [InlineKeyboardButton("📱 No HP", callback_data="editf_nohp"), InlineKeyboardButton("👷 PIC", callback_data="editf_pic")],
+            [InlineKeyboardButton("💼 Jabatan", callback_data="editf_jabatan"), InlineKeyboardButton("📸 Foto", callback_data="editf_foto")],
             [InlineKeyboardButton("📍 Lokasi", callback_data="editf_lokasi")],
-            [InlineKeyboardButton("📸 Foto", callback_data="editf_foto")],
         ]
-        await query.message.reply_text(
-            "Pilih data yang ingin diedit:", reply_markup=InlineKeyboardMarkup(daftar_tombol)
-        )
+        await query.message.reply_text("Pilih data yang ingin diedit:", reply_markup=InlineKeyboardMarkup(daftar_tombol))
         return KEG_PILIH_EDIT
 
-    # query.data == "keg_aksi_submit"
+    # Submit
     ud = context.user_data
-    kode = ud["kode"]
-    tanggal = ud["tanggal"]
-
     try:
         await simpan_kegiatan(
-            tanggal, kode,
-            ud["nama_kegiatan"], ud["nama_usaha"], ud["tag_lokasi_kegiatan"], ud["foto_kegiatan"], ud["hasil"],
+            ud["tanggal"], ud["kode"], ud["nama_kegiatan"], ud["nama_usaha"],
+            ud["tag_lokasi_kegiatan"], ud["foto_kegiatan"], ud["hasil"],
             ud["no_hp_pic"], ud["nama_pic"], ud["jabatan_pic"],
-            ud.get("status_deal"), ud.get("paket"),
+            ud.get("status_deal"), ud.get("paket")
         )
     except Exception as e:
-        logger.error(f"Gagal simpan kegiatan ke database: {e}")
-        await query.message.reply_text(
-            "⚠️ Terjadi kesalahan saat menyimpan kegiatan ke database. Coba lagi atau hubungi admin."
-        )
+        logger.error(f"Gagal simpan kegiatan: {e}")
+        await query.message.reply_text("⚠️ Terjadi kesalahan saat menyimpan.")
         return ConversationHandler.END
 
-    ringkasan_final = (
-        f"👤 {ud['nama']} ({kode})\n" + _teks_ringkasan_kegiatan(ud, "✅ LAPORAN KEGIATAN TERSIMPAN")
-    )
+    ringkasan_final = f"👤 {ud['nama']} ({ud['kode']})\n" + _teks_ringkasan_kegiatan(ud, "✅ LAPORAN KEGIATAN TERSIMPAN")
     await query.message.reply_text(ringkasan_final)
     await kirim_notifikasi_grup(context, ringkasan_final, ud.get("foto_kegiatan"))
-
     context.user_data.clear()
     return ConversationHandler.END
-
 
 async def keg_pilih_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1875,61 +1564,70 @@ async def keg_pilih_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["mode_edit"] = True
     field = query.data.split("_", 1)[1]
 
-    if field == "nama_kegiatan":
-        tombol_kegiatan = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(j, callback_data=f"jeniskeg_{i}")] for i, j in enumerate(DAFTAR_JENIS_KEGIATAN)]
-        )
-        await query.message.reply_text("Pilih Jenis Kegiatan yang baru:", reply_markup=tombol_kegiatan)
+    if field == "kegiatan":
+        tombol = InlineKeyboardMarkup([[InlineKeyboardButton(j, callback_data=f"jeniskeg_{i}")] for i, j in enumerate(DAFTAR_JENIS_KEGIATAN)])
+        await query.message.reply_text("Pilih Jenis Kegiatan yang baru:", reply_markup=tombol)
         return KEG_NAMA_KEGIATAN
-
-    if field == "nama_usaha":
-        await query.message.reply_text("Masukkan Nama Usaha/Toko yang baru:")
+    if field == "usaha":
+        await query.message.reply_text("Masukkan Nama Usaha yang baru:")
         return KEG_NAMA_USAHA
-
-    if field == "lokasi":
-        tombol_lokasi = ReplyKeyboardMarkup(
-            [[KeyboardButton("📍 Kirim Lokasi Kegiatan Sekarang", request_location=True)]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await query.message.reply_text("Share lokasi kegiatan yang baru:", reply_markup=tombol_lokasi)
-        return KEG_LOKASI
-
-    if field == "foto":
-        await query.message.reply_text("Kirim FOTO kegiatan yang baru:")
-        return KEG_FOTO
-
     if field == "hasil":
-        await query.message.reply_text("Masukkan Hasil kegiatan yang baru:")
+        await query.message.reply_text("Masukkan Hasil yang baru:")
         return KEG_HASIL
-
     if field == "status":
-        tombol_deal = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("✅ Deal", callback_data="deal_ya")],
-                [InlineKeyboardButton("❌ Belum Deal", callback_data="deal_tidak")],
-            ]
-        )
-        await query.message.reply_text("Pilih status hasil visit yang baru:", reply_markup=tombol_deal)
+        tombol = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Deal", callback_data="deal_ya")],
+            [InlineKeyboardButton("❌ Belum Deal", callback_data="deal_tidak")],
+        ])
+        await query.message.reply_text("Pilih status hasil visit yang baru:", reply_markup=tombol)
         return KEG_STATUS_DEAL
-
     if field == "nohp":
-        await query.message.reply_text(
-            "Masukkan No HP PIC yang baru (format +62 atau 08..., ketik '-' kalau tidak ada):"
-        )
+        await query.message.reply_text("Masukkan No HP PIC yang baru:")
         return KEG_NOHP
-
     if field == "pic":
         await query.message.reply_text("Masukkan Nama PIC yang baru:")
         return KEG_PIC
-
     if field == "jabatan":
         await query.message.reply_text("Masukkan Jabatan PIC yang baru:")
         return KEG_JABATAN
+    if field == "foto":
+        await query.message.reply_text("Kirim FOTO yang baru:")
+        return KEG_FOTO
+    if field == "lokasi":
+        tombol = ReplyKeyboardMarkup([[KeyboardButton("📍 Kirim Lokasi", request_location=True)]], resize_keyboard=True, one_time_keyboard=True)
+        await query.message.reply_text("Share lokasi yang baru:", reply_markup=tombol)
+        return KEG_LOKASI
 
-    # fallback tidak dikenal
     return await keg_tampilkan_ringkasan(update, context)
 
+
+
+# ---------- ALUR REGISTRASI AWAL ----------
+async def register_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "🔑 *REGISTRASI AWAL*\nMasukkan Kode Karyawan (AR) Anda (contoh: AR001):", 
+        parse_mode="Markdown"
+    )
+    return REG_KODE
+
+async def reg_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["reg_kode"] = update.message.text.strip().upper()
+    await update.message.reply_text("👤 Masukkan Nama Lengkap Anda:")
+    return REG_NAMA
+
+async def reg_nama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kode = context.user_data["reg_kode"]
+    nama = update.message.text.strip()
+    
+    try:
+        await simpan_karyawan(kode, nama)
+        await update.message.reply_text(f"✅ Registrasi Berhasil!\n\nKode AR: {kode}\nNama: {nama}\n\nSekarang Anda bisa menggunakan /absen atau /kegiatan.")
+    except Exception as e:
+        logger.error(f"Gagal registrasi: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat registrasi ke database. Hubungi admin.")
+    
+    return ConversationHandler.END
 
 # ---------- UMUM ----------
 
@@ -1948,13 +1646,11 @@ async def grup_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *Bot Absensi & Kegiatan*\n\n"
-        "/daftar - Registrasi awal, ikat Kode Karyawan (AR) ke akun Telegram ini (WAJIB sebelum /absen & /kegiatan)\n"
-        "/absen - Absen masuk (Hadir/Sakit/Izin)\n"
+        "/register - Pendaftaran karyawan baru\n/absen - Absen masuk (Hadir/Sakit/Izin), cukup masukkan Kode Karyawan\n"
         "/kegiatan - Input laporan kegiatan/visit (wajib absen Hadir dulu)\n"
         "/rekapabsen - Lihat rekap riwayat absensi (khusus di grup notifikasi)\n"
         "/rekapkegiatan - Lihat rekap riwayat kegiatan (khusus di grup notifikasi)\n"
-        "/exportexcel [YYYY-MM-DD YYYY-MM-DD] - Download data sebagai file Excel, opsional pakai rentang tanggal "
-        "(khusus di grup notifikasi)\n"
+        "/exportexcel - Download semua data sebagai file Excel (khusus di grup notifikasi)\n"
         "/grupid - (setup admin) Lihat ID chat grup ini\n"
         "/batal - Batalkan proses yang sedang berjalan",
         parse_mode="Markdown",
@@ -2013,14 +1709,13 @@ async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         teks += "\nBelum ada data kegiatan.\n"
 
     tanggal_terakhir = None
-    for tanggal, kode, nama_karyawan, nama_kegiatan, nama_usaha, nama_pic, jabatan_pic, no_hp_pic, status_deal, paket in baris_kegiatan:
+    for tanggal, kode, nama_karyawan, nama_kegiatan, nama_pic, jabatan_pic, no_hp_pic, status_deal, paket in baris_kegiatan:
         if tanggal != tanggal_terakhir:
             teks += f"\n{tanggal}\n"
             tanggal_terakhir = tanggal
         baris_paket = f", Paket: {paket}" if status_deal == "Deal" and paket else ""
         teks += (
             f"• {kode} | {nama_karyawan} | {nama_kegiatan} [{status_deal or '-'}{baris_paket}]\n"
-            f"  Usaha: {nama_usaha or '-'}\n"
             f"  PIC: {nama_pic} ({jabatan_pic}) — {sensor_nomor_hp(no_hp_pic)}\n"
         )
 
@@ -2029,27 +1724,8 @@ async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(teks[i:i + batas])
 
 
-def _parse_rentang_tanggal(args):
-    """Parse argumen command jadi (tanggal_mulai, tanggal_selesai) format 'YYYY-MM-DD',
-    atau (None, None) kalau tidak ada argumen. Raise ValueError kalau formatnya salah."""
-    if not args:
-        return None, None
-    if len(args) != 2:
-        raise ValueError("Harus 2 tanggal: tanggal_mulai dan tanggal_selesai.")
-
-    tanggal_mulai_str, tanggal_selesai_str = args
-    tanggal_mulai = datetime.strptime(tanggal_mulai_str, "%Y-%m-%d").date()
-    tanggal_selesai = datetime.strptime(tanggal_selesai_str, "%Y-%m-%d").date()
-    if tanggal_mulai > tanggal_selesai:
-        tanggal_mulai, tanggal_selesai = tanggal_selesai, tanggal_mulai
-
-    return tanggal_mulai.isoformat(), tanggal_selesai.isoformat()
-
-
 async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Export data absensi & kegiatan ke 1 file Excel (.xlsx) dan kirim langsung
-    ke chat (khusus dari grup notifikasi resmi). Bisa dibatasi rentang tanggal:
-    /exportexcel 2026-08-17 2026-08-30"""
+    """Export data absensi & kegiatan ke file Excel (.xlsx). Bisa pakai rentang tanggal."""
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
             "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
@@ -2062,22 +1738,18 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        tanggal_mulai, tanggal_selesai = _parse_rentang_tanggal(context.args)
-    except ValueError as e:
-        await update.message.reply_text(
-            f"⚠️ {e}\nContoh pemakaian: /exportexcel 2026-08-17 2026-08-30\n"
-            "Atau /exportexcel tanpa argumen untuk export semua data."
-        )
-        return
-
-    if tanggal_mulai:
-        await update.message.reply_text(f"⏳ Sedang menyiapkan file Excel ({tanggal_mulai} s/d {tanggal_selesai})...")
+    args = update.message.text.split()[1:]
+    start_date = None
+    end_date = None
+    if len(args) == 2:
+        start_date = args[0]
+        end_date = args[1]
+        await update.message.reply_text(f"⏳ Sedang menyiapkan file Excel untuk tanggal {start_date} s/d {end_date}...")
     else:
-        await update.message.reply_text("⏳ Sedang menyiapkan file Excel (semua data)...")
+        await update.message.reply_text("⏳ Sedang menyiapkan file Excel untuk SELURUH data...")
 
     try:
-        path_file = await asyncio.to_thread(_build_excel_export_sync, tanggal_mulai, tanggal_selesai)
+        path_file = await asyncio.to_thread(_build_excel_export_sync, start_date, end_date)
     except Exception as e:
         logger.error(f"Gagal membuat file Excel: {e}")
         await update.message.reply_text("⚠️ Gagal membuat file Excel dari database. Coba lagi nanti.")
@@ -2135,9 +1807,9 @@ async def bangun_rekap_malam(tanggal=None):
 
     teks += f"\n== KEGIATAN ({len(kegiatan)} laporan, {jumlah_deal} Deal) ==\n"
     if kegiatan:
-        for kode, nama, nama_kegiatan, status_deal, paket in kegiatan:
+        for kode, nama, nama_kegiatan, nama_usaha, status_deal, paket in kegiatan:
             baris_paket = f" — Paket: {paket}" if status_deal == "Deal" and paket else ""
-            teks += f"• {nama} ({kode}) — {nama_kegiatan} [{status_deal or '-'}]{baris_paket}\n"
+            teks += f"• {nama} ({kode}) — {nama_kegiatan} di {nama_usaha} [{status_deal or '-'}]{baris_paket}\n"
     else:
         teks += "Tidak ada laporan kegiatan.\n"
 
@@ -2188,25 +1860,18 @@ def main():
     request = HTTPXRequest(connect_timeout=20, read_timeout=20)
     app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
 
-    conv_registrasi = ConversationHandler(
-        entry_points=[CommandHandler("daftar", registrasi_mulai)],
-        states={
-            REGISTRASI_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, registrasi_kode)],
-        },
-        fallbacks=[CommandHandler("batal", batal)],
-    )
-
     conv_absen = ConversationHandler(
         entry_points=[CommandHandler("absen", absen_mulai)],
         states={
+            ABSEN_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_kode)],
             ABSEN_STATUS: [
                 CallbackQueryHandler(absen_status, pattern="^status_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, absen_status_belum_tap),
             ],
-            ABSEN_RENCANA: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_rencana)],
+            ABSEN_PILIH_KANTOR: [CallbackQueryHandler(absen_pilih_lokasi_kantor, pattern="^kantor_")],
             ABSEN_LOKASI: [MessageHandler(filters.LOCATION, absen_lokasi)],
             ABSEN_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, absen_foto)],
-            ABSEN_KONFIRMASI: [CallbackQueryHandler(absen_konfirmasi_aksi, pattern="^absenaksi_")],
+            ABSEN_RENCANA: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_rencana)],
             ABSEN_IZIN_KETERANGAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen_izin_keterangan)],
             ABSEN_IZIN_TAMBAH_FOTO: [CallbackQueryHandler(absen_izin_tambah_foto, pattern="^izinfoto_")],
             ABSEN_IZIN_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, absen_izin_foto)],
@@ -2214,22 +1879,31 @@ def main():
         fallbacks=[CommandHandler("batal", batal)],
     )
 
+    conv_register = ConversationHandler(
+        entry_points=[CommandHandler("register", register_mulai)],
+        states={
+            REG_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_kode)],
+            REG_NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_nama)],
+        },
+        fallbacks=[CommandHandler("batal", batal)],
+    )
+
     conv_kegiatan = ConversationHandler(
         entry_points=[CommandHandler("kegiatan", kegiatan_mulai)],
         states={
+            KEG_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_kode)],
             KEG_NAMA_KEGIATAN: [
                 CallbackQueryHandler(keg_pilih_jenis_kegiatan, pattern="^jeniskeg_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, keg_jenis_kegiatan_belum_tap),
             ],
-            KEG_NAMA_USAHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_nama_usaha)],
+            KEG_LOKASI: [MessageHandler(filters.LOCATION, keg_lokasi)],
+            KEG_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, keg_foto)],
             KEG_HASIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_hasil)],
             KEG_STATUS_DEAL: [CallbackQueryHandler(keg_status_deal, pattern="^deal_")],
             KEG_PAKET: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_paket)],
             KEG_NOHP: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_nohp)],
             KEG_PIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_pic)],
             KEG_JABATAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, keg_jabatan)],
-            KEG_LOKASI: [MessageHandler(filters.LOCATION, keg_lokasi)],
-            KEG_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, keg_foto)],
             KEG_RINGKASAN_AKSI: [CallbackQueryHandler(keg_ringkasan_aksi, pattern="^keg_aksi_")],
             KEG_PILIH_EDIT: [CallbackQueryHandler(keg_pilih_edit, pattern="^editf_")],
         },
@@ -2242,12 +1916,11 @@ def main():
     app.add_handler(CommandHandler("rekapkegiatan", rekap_kegiatan))
     app.add_handler(CommandHandler("exportexcel", export_excel))
     app.add_handler(CommandHandler("grupid", grup_id))
-    app.add_handler(conv_registrasi)
     app.add_handler(conv_absen)
     app.add_handler(conv_kegiatan)
+    app.add_handler(conv_register)
     app.add_error_handler(error_handler)
 
-    _migrasi_schema_sync()
     _init_gsheet()
     _init_excel_online()
 
