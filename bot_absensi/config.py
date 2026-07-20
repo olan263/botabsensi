@@ -100,7 +100,7 @@ TITIK_LOKASI_RESMI = [
     {"nama": "Cendana", "lat": -6.477439, "lon": 106.839196},
 ]
 
-RADIUS_LOKASI_METER = 50
+RADIUS_LOKASI_METER = 100
 
 DAFTAR_JENIS_KEGIATAN = [
     "Visit",
