@@ -11,6 +11,7 @@ from .. import db
 from ..config import logger, GROUP_CHAT_ID, GROUP_CHAT_ID_INT, FOLDER_FOTO
 from ..integrations.export_excel import OPENPYXL_TERSEDIA, build_excel_export_sync
 from ..utils.misc import sensor_nomor_hp
+from ..utils.image import kompres_foto
 import asyncio
 
 
@@ -33,6 +34,7 @@ async def download_foto_dari_pesan(update: Update, prefix: str):
 
     path_foto = os.path.join(FOLDER_FOTO, f"{prefix}_{int(datetime.now().timestamp())}.{ext}")
     await tg_file.download_to_drive(path_foto)
+    await asyncio.to_thread(kompres_foto, path_foto)
     return path_foto
 
 
