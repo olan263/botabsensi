@@ -73,8 +73,6 @@ def main():
             ],
             KEG_NAMA_USAHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_nama_usaha)],
             KEG_HASIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_hasil)],
-            KEG_STATUS_DEAL: [CallbackQueryHandler(kegiatan.keg_status_deal, pattern="^deal_")],
-            KEG_PAKET: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_paket)],
             KEG_NOHP: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_nohp)],
             KEG_PIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_pic)],
             KEG_JABATAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_jabatan)],

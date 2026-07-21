@@ -134,11 +134,11 @@ def _simpan_kegiatan_sync(
                 """
                 INSERT INTO kegiatan
                     (tanggal_kegiatan, kode_ar, nama_kegiatan, nama_usaha, lokasi_usaha, foto_kegiatan, hasil_kegiatan,
-                     nomor_pic, nama_pic, jabatan_pic, status_deal, nama_paket)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     nomor_pic, nama_pic, jabatan_pic)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
-                 no_hp_pic, nama_pic, jabatan_pic, status_deal, paket),
+                 no_hp_pic, nama_pic, jabatan_pic),
             )
         conn.commit()
     finally:
@@ -192,7 +192,7 @@ def _ambil_rekap_kegiatan_sync(tanggal_mulai=None, tanggal_selesai=None):
                 cur.execute(
                     """
                     SELECT k.tanggal_kegiatan, k.kode_ar, ky.nama_ar, k.nama_kegiatan, k.nama_usaha, k.nama_pic, k.jabatan_pic,
-                           k.nomor_pic, k.status_deal, k.nama_paket
+                           k.nomor_pic
                     FROM kegiatan k
                     JOIN karyawan ky ON k.kode_ar = ky.kode_ar
                     WHERE k.tanggal_kegiatan BETWEEN %s AND %s
@@ -204,7 +204,7 @@ def _ambil_rekap_kegiatan_sync(tanggal_mulai=None, tanggal_selesai=None):
                 cur.execute(
                     """
                     SELECT k.tanggal_kegiatan, k.kode_ar, ky.nama_ar, k.nama_kegiatan, k.nama_usaha, k.nama_pic, k.jabatan_pic,
-                           k.nomor_pic, k.status_deal, k.nama_paket
+                           k.nomor_pic
                     FROM kegiatan k
                     JOIN karyawan ky ON k.kode_ar = ky.kode_ar
                     ORDER BY k.tanggal_kegiatan DESC, k.kode_ar
@@ -239,7 +239,7 @@ def _ambil_kegiatan_tanggal_sync(tanggal):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT k.kode_ar, ky.nama_ar, k.nama_kegiatan, k.status_deal, k.nama_paket
+                SELECT k.kode_ar, ky.nama_ar, k.nama_kegiatan
                 FROM kegiatan k
                 JOIN karyawan ky ON k.kode_ar = ky.kode_ar
                 WHERE k.tanggal_kegiatan = %s

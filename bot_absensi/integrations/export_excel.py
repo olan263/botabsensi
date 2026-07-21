@@ -31,7 +31,7 @@ def build_excel_export_sync(tanggal_mulai=None, tanggal_selesai=None):
     ws2 = wb.create_sheet("Kegiatan")
     ws2.append([
         "Tanggal", "Kode", "Nama Karyawan", "Nama Kegiatan", "Nama Usaha", "Nama PIC Pelanggan",
-        "Jabatan PIC Pelanggan", "No HP PIC Pelanggan", "Status Deal", "Paket",
+        "Jabatan PIC Pelanggan", "No HP PIC Pelanggan",
     ])
     for row in db._ambil_rekap_kegiatan_sync(tanggal_mulai, tanggal_selesai):
         ws2.append(list(row))
