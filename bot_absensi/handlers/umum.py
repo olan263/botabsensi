@@ -151,13 +151,12 @@ async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         teks += "\nBelum ada data kegiatan.\n"
 
     tanggal_terakhir = None
-    for tanggal, kode, nama_karyawan, nama_kegiatan, nama_usaha, nama_pic, jabatan_pic, no_hp_pic, status_deal, paket in baris_kegiatan:
+    for tanggal, kode, nama_karyawan, nama_kegiatan, nama_usaha, nama_pic, jabatan_pic, no_hp_pic in baris_kegiatan:
         if tanggal != tanggal_terakhir:
             teks += f"\n{tanggal}\n"
             tanggal_terakhir = tanggal
-        baris_paket = f", Paket: {paket}" if status_deal == "Deal" and paket else ""
         teks += (
-            f"• {kode} | {nama_karyawan} | {nama_kegiatan} [{status_deal or '-'}{baris_paket}]\n"
+            f"• {kode} | {nama_karyawan} | {nama_kegiatan}\n"
             f"  Usaha: {nama_usaha or '-'}\n"
             f"  PIC: {nama_pic} ({jabatan_pic}) — {sensor_nomor_hp(no_hp_pic)}\n"
         )
