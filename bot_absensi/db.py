@@ -134,11 +134,11 @@ def _simpan_kegiatan_sync(
                 """
                 INSERT INTO kegiatan
                     (tanggal_kegiatan, kode_ar, nama_kegiatan, nama_usaha, lokasi_usaha, foto_kegiatan, hasil_kegiatan,
-                     nomor_pic, nama_pic, jabatan_pic, status_deal, nama_paket)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     nomor_pic, nama_pic, jabatan_pic)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (tanggal, kode, nama_kegiatan, nama_usaha, tag_lokasi, foto_kegiatan, hasil,
-                 no_hp_pic, nama_pic, jabatan_pic, status_deal, paket),
+                 no_hp_pic, nama_pic, jabatan_pic),
             )
         conn.commit()
     finally:

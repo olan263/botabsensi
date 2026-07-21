@@ -91,8 +91,10 @@ async def keg_nama_usaha(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text("Masukkan Hasil dari Kegiatan:")
-    return KEG_HASIL
+    await update.message.reply_text(
+        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' kalau tidak ada):"
+    )
+    return KEG_NOHP
 
 
 async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -102,50 +104,17 @@ async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    tombol_deal = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✅ Deal", callback_data="deal_ya")],
-            [InlineKeyboardButton("❌ Belum Deal", callback_data="deal_tidak")],
-        ]
+    tombol_lokasi = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Kirim Lokasi Kegiatan Sekarang", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
-    await update.message.reply_text("Bagaimana hasil visit ini?", reply_markup=tombol_deal)
-    return KEG_STATUS_DEAL
-
-
-async def keg_status_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_reply_markup(reply_markup=None)
-
-    if query.data == "deal_ya":
-        context.user_data["status_deal"] = "Deal"
-        await query.message.reply_text("🎉 Masukkan Nama Paket yang deal dipilih:")
-        return KEG_PAKET
-
-    context.user_data["status_deal"] = "Belum Deal"
-    context.user_data["paket"] = None
-
-    if context.user_data.get("mode_edit"):
-        context.user_data["mode_edit"] = False
-        return await keg_tampilkan_ringkasan(update, context)
-
-    await query.message.reply_text(
-        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' kalau tidak ada):"
-    )
-    return KEG_NOHP
-
-
-async def keg_paket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["paket"] = update.message.text.strip()
-
-    if context.user_data.get("mode_edit"):
-        context.user_data["mode_edit"] = False
-        return await keg_tampilkan_ringkasan(update, context)
-
     await update.message.reply_text(
-        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' kalau tidak ada):"
+        "📍 Silakan share lokasi kegiatan (tekan tombol di bawah).\n"
+        "Pastikan Anda sedang berada di lokasi kegiatan saat share.",
+        reply_markup=tombol_lokasi,
     )
-    return KEG_NOHP
+    return KEG_LOKASI
 
 
 async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,17 +154,8 @@ async def keg_jabatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    tombol_lokasi = ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 Kirim Lokasi Kegiatan Sekarang", request_location=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await update.message.reply_text(
-        "📍 Silakan share lokasi kegiatan (tekan tombol di bawah).\n"
-        "Pastikan Anda sedang berada di lokasi kegiatan saat share.",
-        reply_markup=tombol_lokasi,
-    )
-    return KEG_LOKASI
+    await update.message.reply_text("Masukkan Hasil dari Kegiatan:")
+    return KEG_HASIL
 
 
 async def keg_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,18 +202,14 @@ async def keg_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _teks_ringkasan_kegiatan(ud, judul):
-    status_deal = ud.get("status_deal", "-")
-    baris_paket = f"📦 Paket: {ud.get('paket')}\n" if status_deal == "Deal" and ud.get("paket") else ""
     return (
         f"{judul}\n\n"
         f"📌 Kegiatan: {ud.get('nama_kegiatan')}\n"
         f"🏢 Nama Usaha: {ud.get('nama_usaha')}\n"
-        f"📝 Hasil: {ud.get('hasil')}\n"
-        f"🤝 Status: {status_deal}\n"
-        f"{baris_paket}"
+        f"📱 No HP: {sensor_nomor_hp(ud.get('no_hp_pic'))}\n"
         f"👷 PIC Pelanggan: {ud.get('nama_pic')}\n"
         f"💼 Jabatan: {ud.get('jabatan_pic')}\n"
-        f"📱 No HP: {sensor_nomor_hp(ud.get('no_hp_pic'))}\n"
+        f"📝 Hasil: {ud.get('hasil')}\n"
         f"📍 Lokasi: {ud.get('tag_lokasi_kegiatan')}"
     )
 
@@ -301,11 +257,10 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
         daftar_tombol = [
             [InlineKeyboardButton("📌 Nama Kegiatan", callback_data="editf_nama_kegiatan")],
             [InlineKeyboardButton("🏢 Nama Usaha", callback_data="editf_nama_usaha")],
-            [InlineKeyboardButton("📝 Hasil", callback_data="editf_hasil")],
-            [InlineKeyboardButton("🤝 Status Deal", callback_data="editf_status")],
             [InlineKeyboardButton("📱 No HP PIC", callback_data="editf_nohp")],
             [InlineKeyboardButton("👷 Nama PIC", callback_data="editf_pic")],
             [InlineKeyboardButton("💼 Jabatan PIC", callback_data="editf_jabatan")],
+            [InlineKeyboardButton("📝 Hasil", callback_data="editf_hasil")],
             [InlineKeyboardButton("📍 Lokasi", callback_data="editf_lokasi")],
             [InlineKeyboardButton("📸 Foto", callback_data="editf_foto")],
         ]
@@ -324,7 +279,7 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
             tanggal, kode,
             ud["nama_kegiatan"], ud["nama_usaha"], ud["tag_lokasi_kegiatan"], ud["foto_kegiatan"], ud["hasil"],
             ud["no_hp_pic"], ud["nama_pic"], ud["jabatan_pic"],
-            ud.get("status_deal"), ud.get("paket"),
+            None, None,
         )
     except Exception as e:
         logger.error(f"Gagal simpan kegiatan ke database: {e}")
@@ -378,16 +333,6 @@ async def keg_pilih_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if field == "hasil":
         await query.message.reply_text("Masukkan Hasil kegiatan yang baru:")
         return KEG_HASIL
-
-    if field == "status":
-        tombol_deal = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("✅ Deal", callback_data="deal_ya")],
-                [InlineKeyboardButton("❌ Belum Deal", callback_data="deal_tidak")],
-            ]
-        )
-        await query.message.reply_text("Pilih status hasil visit yang baru:", reply_markup=tombol_deal)
-        return KEG_STATUS_DEAL
 
     if field == "nohp":
         await query.message.reply_text(
