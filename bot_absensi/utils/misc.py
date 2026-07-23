@@ -1,10 +1,11 @@
 """Helper kecil: escape markdown, sensor nomor HP, validasi nomor HP, tanggal hari ini."""
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 def tanggal_hari_ini():
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d")
 
 
 def escape_markdown(teks):

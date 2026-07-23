@@ -3,6 +3,7 @@
 handler absen & kegiatan."""
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
@@ -32,7 +33,7 @@ async def download_foto_dari_pesan(update: Update, prefix: str):
     if tg_file is None:
         return None
 
-    path_foto = os.path.join(FOLDER_FOTO, f"{prefix}_{int(datetime.now().timestamp())}.{ext}")
+    path_foto = os.path.join(FOLDER_FOTO, f"{prefix}_{int(datetime.now(ZoneInfo('Asia/Jakarta')).timestamp())}.{ext}")
     await tg_file.download_to_drive(path_foto)
     await asyncio.to_thread(kompres_foto, path_foto)
     return path_foto

@@ -1,6 +1,7 @@
 """Bikin file Excel (.xlsx) lokal berisi rekap absensi & kegiatan, untuk /exportexcel."""
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ..config import FOLDER_EXPORT
 from .. import db
@@ -40,7 +41,7 @@ def build_excel_export_sync(tanggal_mulai=None, tanggal_selesai=None):
         akhiran = f"_{tanggal_mulai}_sd_{tanggal_selesai}"
     else:
         akhiran = ""
-    nama_file = f"export_rekap{akhiran}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    nama_file = f"export_rekap{akhiran}_{datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%Y%m%d_%H%M%S')}.xlsx"
     path_file = os.path.join(FOLDER_EXPORT, nama_file)
     wb.save(path_file)
     return path_file

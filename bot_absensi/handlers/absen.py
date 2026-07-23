@@ -1,5 +1,6 @@
 """Alur absen masuk (Hadir/Sakit/Izin)."""
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import (
     Update, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton,
@@ -156,7 +157,7 @@ async def _simpan_dan_selesai_izin(target_pesan, context, foto_path):
     try:
         await services.simpan_absensi(
             tanggal, kode, nama, None, foto_path, keterangan,
-            datetime.now().strftime("%H:%M"), status_final,
+            datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%H:%M"), status_final,
         )
     except Exception as e:
         logger.error(f"Gagal simpan absensi (sakit/izin) ke database: {e}")
@@ -174,7 +175,7 @@ async def _simpan_dan_selesai_izin(target_pesan, context, foto_path):
     caption = (
         f"{emoji_status} {status_final.upper()}\n\n"
         f"👤 {nama} ({kode})\n"
-        f"🕒 {datetime.now().strftime('%H:%M')}\n"
+        f"🕒 {datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%H:%M')}\n"
         f"📝 Keterangan: {keterangan}"
     )
     if foto_path:
@@ -247,7 +248,7 @@ async def absen_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _teks_ringkasan_absen(ud, judul):
-    jam_sekarang = datetime.now().time()
+    jam_sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).time()
     batas_telat = datetime.strptime("11:00", "%H:%M").time()
     status_preview = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
     return (
@@ -307,7 +308,7 @@ async def absen_konfirmasi_aksi(update: Update, context: ContextTypes.DEFAULT_TY
     ud = context.user_data
     kode = ud["kode"]
 
-    jam_sekarang = datetime.now().time()
+    jam_sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).time()
     batas_telat = datetime.strptime("11:00", "%H:%M").time()
     status_absen = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
     tanggal = tanggal_hari_ini()
@@ -315,7 +316,7 @@ async def absen_konfirmasi_aksi(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         await services.simpan_absensi(
             tanggal, kode, ud["nama"], ud["tag_lokasi"], ud["foto"], ud["rencana_kegiatan"],
-            datetime.now().strftime("%H:%M"), status_absen,
+            datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%H:%M"), status_absen,
         )
     except Exception as e:
         logger.error(f"Gagal simpan absensi ke database: {e}")
@@ -327,7 +328,7 @@ async def absen_konfirmasi_aksi(update: Update, context: ContextTypes.DEFAULT_TY
     caption = (
         "✅ ABSEN MASUK\n\n"
         f"👤 {ud['nama']} ({kode})\n"
-        f"🕒 {datetime.now().strftime('%H:%M')} — {status_absen}\n"
+        f"🕒 {datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%H:%M')} — {status_absen}\n"
         f"📍 {ud['tag_lokasi']}\n"
         f"📝 Rencana: {ud['rencana_kegiatan']}"
     )
