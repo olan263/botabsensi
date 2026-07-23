@@ -2,6 +2,7 @@
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
+<<<<<<< HEAD
 
 ZONA_WIB = ZoneInfo("Asia/Jakarta")
 
@@ -16,6 +17,12 @@ def waktu_sekarang():
 
 def tanggal_hari_ini():
     return waktu_sekarang().strftime("%Y-%m-%d")
+=======
+
+
+def tanggal_hari_ini():
+    return datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d")
+>>>>>>> 65c1a7bab9ee5d6b7882acd3bab506bcebbfc14b
 
 
 def escape_markdown(teks):
