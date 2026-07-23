@@ -1,10 +1,21 @@
 """Helper kecil: escape markdown, sensor nomor HP, validasi nomor HP, tanggal hari ini."""
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+ZONA_WIB = ZoneInfo("Asia/Jakarta")
+
+
+def waktu_sekarang():
+    """Waktu sekarang di zona WIB (Asia/Jakarta), TIDAK bergantung ke timezone
+    server (VM cloud biasanya default UTC, jadi harus selalu pakai ini,
+    JANGAN datetime.now() polos, supaya jam absen & status Tepat Waktu/Telat
+    tidak salah 7 jam)."""
+    return datetime.now(ZONA_WIB)
 
 
 def tanggal_hari_ini():
-    return datetime.now().strftime("%Y-%m-%d")
+    return waktu_sekarang().strftime("%Y-%m-%d")
 
 
 def escape_markdown(teks):
