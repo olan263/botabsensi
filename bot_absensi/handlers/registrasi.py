@@ -6,6 +6,7 @@ from .. import db
 from ..config import logger
 from ..states import REGISTRASI_KODE
 from ..utils.misc import escape_markdown
+from .umum import MENU_UTAMA_KEYBOARD, MENU_BATAL_KEYBOARD
 
 
 async def registrasi_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -16,15 +17,16 @@ async def registrasi_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Akun Telegram Anda sudah terdaftar sebagai *{escape_markdown(nama)}* "
             f"(Kode: {escape_markdown(kode)}).\n\n"
-            "Kalau ini keliru atau Anda ganti HP, hubungi admin untuk reset.",
+            "Jika terdapat keliru atau Anda ganti HP, silakan hubungi admin untuk reset.",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
 
     await update.message.reply_text(
         "📋 *REGISTRASI AWAL*\n"
-        "Masukkan Kode Karyawan (AR) Anda untuk mengikat akun Telegram ini ke kode tsb:",
+        "Masukkan Kode Karyawan (AR) Anda untuk mengikat akun Telegram Anda:",
         parse_mode="Markdown",
+        reply_markup=MENU_BATAL_KEYBOARD
     )
     return REGISTRASI_KODE
 
@@ -44,30 +46,35 @@ async def registrasi_kode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ Kode karyawan '{escape_markdown(kode)}' tidak ditemukan di database.\n"
             "Mohon cek kembali kode Anda, atau hubungi admin.\n\n"
-            "➡️ Ketik /daftar lagi untuk mencoba dari awal."
+            "➡️ Klik tombol ⚙️ Registrasi lagi untuk mencoba dari awal.",
+            reply_markup=MENU_UTAMA_KEYBOARD
         )
         return ConversationHandler.END
 
     if status == "kode_sudah_dipakai":
         await update.message.reply_text(
             f"❌ Kode '{escape_markdown(kode)}' sudah terdaftar ke akun Telegram lain.\n"
-            "Kalau ini keliru, hubungi admin."
+            "Jika terdapat keliru, silakan hubungi admin.\n\n"
+            "➡️ Klik tombol ⚙️ Registrasi lagi untuk mencoba dari awal.",
+            reply_markup=MENU_UTAMA_KEYBOARD
         )
         return ConversationHandler.END
 
     if status == "sudah_terdaftar":
         await update.message.reply_text(
             "❌ Akun Telegram Anda sudah terdaftar dengan kode lain sebelumnya.\n"
-            "Hubungi admin kalau perlu diganti."
+            "Hubungi admin jika terdapat keliru.",
+            reply_markup=MENU_UTAMA_KEYBOARD
         )
         return ConversationHandler.END
 
     nama = await db.cari_nama_karyawan(kode)
     await update.message.reply_text(
-        f"✅ Registrasi berhasil! Akun Telegram ini terikat ke *{escape_markdown(nama)}* "
+        f"✅ Registrasi berhasil! Akun Telegram terdaftar sebagai *{escape_markdown(nama)}* "
         f"(Kode: {escape_markdown(kode)}).\n\n"
-        "Sekarang Anda bisa langsung pakai /absen dan /kegiatan tanpa ketik kode lagi.",
+        "Sekarang Anda sudah bisa melakukan 📝 Absen Masuk dan 🏃 Input Kegiatan.",
         parse_mode="Markdown",
+        reply_markup=MENU_UTAMA_KEYBOARD
     )
     return ConversationHandler.END
 
@@ -81,8 +88,7 @@ async def pastikan_terdaftar(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if hasil is None:
         await update.message.reply_text(
             "❌ Akun Telegram Anda belum terdaftar.\n"
-            "Silakan jalankan /daftar terlebih dahulu (masukkan Kode Karyawan/AR Anda),"
-            " baru bisa pakai /absen dan /kegiatan."
+            "Silakan jalankan ⚙️ Registrasi terlebih dahulu (masukkan Kode Karyawan/AR Anda) dengan klik tombol ⚙️ Registrasi dibawah."
         )
         return None
     return hasil

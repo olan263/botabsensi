@@ -10,9 +10,16 @@ from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler, filters,
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ConversationHandler,
+    CallbackQueryHandler,
 )
+
+# Filter custom agar teks dari tombol menu utama tidak ditangkap sebagai input biasa
+NON_CMD_TXT = filters.TEXT & ~filters.COMMAND & ~filters.Regex("^(📝 Absen Masuk|🏃 Input Kegiatan|⚙️ Registrasi|❌ Batal)$")
 from telegram.request import HTTPXRequest
 
 from . import db
@@ -39,49 +46,67 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
 
     conv_registrasi = ConversationHandler(
-        entry_points=[CommandHandler("daftar", registrasi.registrasi_mulai)],
+        entry_points=[
+            CommandHandler("daftar", registrasi.registrasi_mulai),
+            MessageHandler(filters.Text(["⚙️ Registrasi"]), registrasi.registrasi_mulai)
+        ],
         states={
-            REGISTRASI_KODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, registrasi.registrasi_kode)],
+            REGISTRASI_KODE: [MessageHandler(NON_CMD_TXT, registrasi.registrasi_kode)],
         },
-        fallbacks=[CommandHandler("batal", umum.batal)],
+        fallbacks=[
+            CommandHandler("batal", umum.batal),
+            MessageHandler(filters.Text(["❌ Batal"]), umum.batal)
+        ],
     )
 
     conv_absen = ConversationHandler(
-        entry_points=[CommandHandler("absen", absen.absen_mulai)],
+        entry_points=[
+            CommandHandler("absen", absen.absen_mulai),
+            MessageHandler(filters.Text(["📝 Absen Masuk"]), absen.absen_mulai)
+        ],
         states={
             ABSEN_STATUS: [
                 CallbackQueryHandler(absen.absen_status, pattern="^status_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, absen.absen_status_belum_tap),
+                MessageHandler(NON_CMD_TXT, absen.absen_status_belum_tap),
             ],
-            ABSEN_RENCANA: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen.absen_rencana)],
+            ABSEN_RENCANA: [MessageHandler(NON_CMD_TXT, absen.absen_rencana)],
             ABSEN_LOKASI: [MessageHandler(filters.LOCATION, absen.absen_lokasi)],
             ABSEN_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, absen.absen_foto)],
             ABSEN_KONFIRMASI: [CallbackQueryHandler(absen.absen_konfirmasi_aksi, pattern="^absenaksi_")],
-            ABSEN_IZIN_KETERANGAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, absen.absen_izin_keterangan)],
+            ABSEN_IZIN_KETERANGAN: [MessageHandler(NON_CMD_TXT, absen.absen_izin_keterangan)],
             ABSEN_IZIN_TAMBAH_FOTO: [CallbackQueryHandler(absen.absen_izin_tambah_foto, pattern="^izinfoto_")],
             ABSEN_IZIN_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, absen.absen_izin_foto)],
         },
-        fallbacks=[CommandHandler("batal", umum.batal)],
+        fallbacks=[
+            CommandHandler("batal", umum.batal),
+            MessageHandler(filters.Text(["❌ Batal"]), umum.batal)
+        ],
     )
 
     conv_kegiatan = ConversationHandler(
-        entry_points=[CommandHandler("kegiatan", kegiatan.kegiatan_mulai)],
+        entry_points=[
+            CommandHandler("kegiatan", kegiatan.kegiatan_mulai),
+            MessageHandler(filters.Text(["🏃 Input Kegiatan"]), kegiatan.kegiatan_mulai)
+        ],
         states={
             KEG_NAMA_KEGIATAN: [
                 CallbackQueryHandler(kegiatan.keg_pilih_jenis_kegiatan, pattern="^jeniskeg_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_jenis_kegiatan_belum_tap),
+                MessageHandler(NON_CMD_TXT, kegiatan.keg_jenis_kegiatan_belum_tap),
             ],
-            KEG_NAMA_USAHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_nama_usaha)],
-            KEG_HASIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_hasil)],
-            KEG_NOHP: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_nohp)],
-            KEG_PIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_pic)],
-            KEG_JABATAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, kegiatan.keg_jabatan)],
+            KEG_NAMA_USAHA: [MessageHandler(NON_CMD_TXT, kegiatan.keg_nama_usaha)],
+            KEG_HASIL: [MessageHandler(NON_CMD_TXT, kegiatan.keg_hasil)],
+            KEG_NOHP: [MessageHandler(NON_CMD_TXT, kegiatan.keg_nohp)],
+            KEG_PIC: [MessageHandler(NON_CMD_TXT, kegiatan.keg_pic)],
+            KEG_JABATAN: [MessageHandler(NON_CMD_TXT, kegiatan.keg_jabatan)],
             KEG_LOKASI: [MessageHandler(filters.LOCATION, kegiatan.keg_lokasi)],
             KEG_FOTO: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, kegiatan.keg_foto)],
             KEG_RINGKASAN_AKSI: [CallbackQueryHandler(kegiatan.keg_ringkasan_aksi, pattern="^keg_aksi_")],
             KEG_PILIH_EDIT: [CallbackQueryHandler(kegiatan.keg_pilih_edit, pattern="^editf_")],
         },
-        fallbacks=[CommandHandler("batal", umum.batal)],
+        fallbacks=[
+            CommandHandler("batal", umum.batal),
+            MessageHandler(filters.Text(["❌ Batal"]), umum.batal)
+        ],
     )
 
     app.add_handler(CommandHandler("start", umum.mulai))

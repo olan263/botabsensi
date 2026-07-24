@@ -12,7 +12,22 @@ from ..config import logger, GROUP_CHAT_ID, GROUP_CHAT_ID_INT, FOLDER_FOTO
 from ..integrations.export_excel import OPENPYXL_TERSEDIA, build_excel_export_sync
 from ..utils.misc import sensor_nomor_hp
 import asyncio
+from telegram import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
+MENU_UTAMA_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("📝 Absen Masuk"), KeyboardButton("🏃 Input Kegiatan")],
+        [KeyboardButton("⚙️ Registrasi"), KeyboardButton("❌ Batal")]
+    ],
+    resize_keyboard=True,
+    is_persistent=False
+)
+
+MENU_BATAL_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton("❌ Batal")]],
+    resize_keyboard=True,
+    is_persistent=False
+)
 
 async def download_foto_dari_pesan(update: Update, prefix: str):
     """Menerima foto baik dikirim sebagai Photo maupun Document (file gambar).
@@ -73,9 +88,14 @@ async def _cek_akses_rekap(update: Update):
 
 
 async def batal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from telegram import ReplyKeyboardRemove
     context.user_data.clear()
-    await update.message.reply_text("Dibatalkan.", reply_markup=ReplyKeyboardRemove())
+    
+    tipe_chat = update.effective_chat.type
+    if tipe_chat in ("group", "supergroup"):
+        await update.message.reply_text("Proses dibatalkan.", reply_markup=ReplyKeyboardRemove())
+    else:
+        await update.message.reply_text("Proses dibatalkan. Silakan pilih menu lain atau mulai dari awal.", reply_markup=MENU_UTAMA_KEYBOARD)
+        
     return ConversationHandler.END
 
 
@@ -85,17 +105,31 @@ async def grup_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tipe_chat = update.effective_chat.type
+    
+    # 1. SMART UI: Jika di Grup Chat (Hanya menu Admin/Rekap)
+    if tipe_chat in ("group", "supergroup"):
+        await update.message.reply_text(
+            "🤖 *Bot Absensi & Kegiatan (Grup Mode)*\n\n"
+            "Gunakan perintah berikut:\n"
+            "/rekapabsen - Rekap absensi hari ini\n"
+            "/rekapkegiatan - Rekap kegiatan\n"
+            "/exportexcel - Download data ke Excel",
+            parse_mode="Markdown"
+        )
+        return
+        
+    # 2. SMART UI: Jika di Chat Pribadi (Japri) -> Munculkan Reply Keyboard Permanen
+    pesan_welcome = (
+        "🤖 *Selamat Datang di Bot Absensi & Kegiatan AR!*\n\n"
+        "Silakan gunakan **Menu di bawah** 👇 untuk memulai bot.\n"
+        "_(Jika menu tombol tidak muncul, klik ikon kotak bergaris empat di sebelah tombol 📎 atau mikrofon)._\n\n"
+        "💡 *Catatan:* Untuk AR yang baru pertama kali menggunakan bot (belum daftar), silakan klik tombol **⚙️ Registrasi** terlebih dahulu sebelum absen."
+    )
+    
     await update.message.reply_text(
-        "🤖 *Bot Absensi & Kegiatan*\n\n"
-        "/daftar - Registrasi awal, ikat Kode Karyawan (AR) ke akun Telegram ini (WAJIB sebelum /absen & /kegiatan)\n"
-        "/absen - Absen masuk (Hadir/Sakit/Izin)\n"
-        "/kegiatan - Input laporan kegiatan/visit (wajib absen Hadir dulu)\n"
-        "/rekapabsen - Lihat rekap riwayat absensi (khusus di grup notifikasi)\n"
-        "/rekapkegiatan - Lihat rekap riwayat kegiatan (khusus di grup notifikasi)\n"
-        "/exportexcel [YYYY-MM-DD YYYY-MM-DD] - Download data sebagai file Excel, opsional pakai rentang tanggal "
-        "(khusus di grup notifikasi)\n"
-        "/grupid - (setup admin) Lihat ID chat grup ini\n"
-        "/batal - Batalkan proses yang sedang berjalan",
+        pesan_welcome,
+        reply_markup=MENU_UTAMA_KEYBOARD,
         parse_mode="Markdown",
     )
 

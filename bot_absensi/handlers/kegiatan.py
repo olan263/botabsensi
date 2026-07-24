@@ -15,7 +15,7 @@ from ..states import (
 from ..utils.misc import escape_markdown, sensor_nomor_hp, validasi_no_hp, tanggal_hari_ini
 from ..utils.geo import buat_link_google_maps, reverse_geocode
 from .registrasi import pastikan_terdaftar
-from .umum import download_foto_dari_pesan, kirim_notifikasi_grup
+from .umum import download_foto_dari_pesan, kirim_notifikasi_grup, MENU_UTAMA_KEYBOARD, MENU_BATAL_KEYBOARD
 
 
 async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30,8 +30,8 @@ async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hasil = await db.cek_sudah_absen(tanggal, kode)
     if hasil is None:
         await update.message.reply_text(
-            "❌ Anda BELUM melakukan absen masuk HARI INI! Silakan /absen terlebih dahulu.\n\n"
-            "➡️ Ketik /absen, lalu setelah selesai baru ketik /kegiatan lagi."
+            "❌ Anda BELUM melakukan absen masuk HARI INI! Silakan absen terlebih dahulu.\n\n"
+            "➡️ Klik tombol 📝 Absen Masuk untuk absen terlebih dahulu, lalu setelah selesai baru klik tombol 🏃 Input Kegiatan lagi."
         )
         return ConversationHandler.END
 
@@ -39,7 +39,7 @@ async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if status in ("Sakit", "Izin"):
         await update.message.reply_text(
             f"❌ Anda tercatat *{escape_markdown(status)}* hari ini, sehingga tidak bisa mengisi laporan kegiatan.\n"
-            "Kalau ini keliru, hubungi admin.",
+            "Jika terdapat keliru, silakan hubungi admin.",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
@@ -73,7 +73,7 @@ async def keg_pilih_jenis_kegiatan(update: Update, context: ContextTypes.DEFAULT
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await query.message.reply_text("🏢 Masukkan Nama Usaha/Toko pelanggan yang dikunjungi:")
+    await query.message.reply_text("🏢 Masukkan Nama Usaha/Toko pelanggan yang dikunjungi:", reply_markup=MENU_BATAL_KEYBOARD)
     return KEG_NAMA_USAHA
 
 
@@ -91,10 +91,8 @@ async def keg_nama_usaha(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text(
-        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' kalau tidak ada):"
-    )
-    return KEG_NOHP
+    await update.message.reply_text("Masukkan Nama PIC Pelanggan:")
+    return KEG_PIC
 
 
 async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,7 +103,7 @@ async def keg_hasil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await keg_tampilkan_ringkasan(update, context)
 
     tombol_lokasi = ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 Kirim Lokasi Kegiatan Sekarang", request_location=True)]],
+        [[KeyboardButton("📍 Kirim Lokasi Kegiatan Sekarang", request_location=True)], [KeyboardButton("❌ Batal")]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -122,7 +120,7 @@ async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if nomor_valid is None:
         await update.message.reply_text(
             "❌ Format nomor HP tidak valid. Gunakan format +62xxxxxxxxxx atau 08xxxxxxxxxx "
-            "(tanpa spasi berlebih), atau ketik '-' kalau memang tidak ada."
+            "(tanpa spasi berlebih), atau ketik '-' jika tidak ada."
         )
         return KEG_NOHP
 
@@ -132,8 +130,8 @@ async def keg_nohp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text("Masukkan Nama PIC Pelanggan:")
-    return KEG_PIC
+    await update.message.reply_text("Masukkan Jabatan PIC Pelanggan (contoh: Manager Toko, Owner, Staff, dll):")
+    return KEG_JABATAN
 
 
 async def keg_pic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,8 +141,10 @@ async def keg_pic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode_edit"] = False
         return await keg_tampilkan_ringkasan(update, context)
 
-    await update.message.reply_text("Masukkan Jabatan PIC Pelanggan (contoh: Manager Toko, Owner, Staff, dll):")
-    return KEG_JABATAN
+    await update.message.reply_text(
+        "Masukkan No HP PIC Pelanggan (format +62 atau 08..., ketik '-' jika tidak ada):"
+    )
+    return KEG_NOHP
 
 
 async def keg_jabatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,11 +206,11 @@ def _teks_ringkasan_kegiatan(ud, judul):
         f"{judul}\n\n"
         f"📌 Kegiatan: {ud.get('nama_kegiatan')}\n"
         f"🏢 Nama Usaha: {ud.get('nama_usaha')}\n"
-        f"📱 No HP: {sensor_nomor_hp(ud.get('no_hp_pic'))}\n"
-        f"👷 PIC Pelanggan: {ud.get('nama_pic')}\n"
-        f"💼 Jabatan: {ud.get('jabatan_pic')}\n"
-        f"📝 Hasil: {ud.get('hasil')}\n"
-        f"📍 Lokasi: {ud.get('tag_lokasi_kegiatan')}"
+        f"👷 Nama PIC Pelanggan: {ud.get('nama_pic')}\n"
+        f"📱 No HP PIC Pelanggan: {sensor_nomor_hp(ud.get('no_hp_pic'))}\n"
+        f"💼 Jabatan PIC Pelanggan: {ud.get('jabatan_pic')}\n"
+        f"📝 Hasil Kegiatan: {ud.get('hasil')}\n"
+        f"📍 Lokasi Usaha: {ud.get('tag_lokasi_kegiatan')}"
     )
 
 
@@ -248,7 +248,8 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if query.data == "keg_aksi_batal":
         await query.message.reply_text(
-            "❌ Laporan kegiatan dibatalkan. Ketik /kegiatan untuk mulai ulang dari awal."
+            "❌ Laporan kegiatan dibatalkan. Silakan pilih menu lain atau mulai dari awal.",
+            reply_markup=MENU_UTAMA_KEYBOARD
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -257,12 +258,12 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
         daftar_tombol = [
             [InlineKeyboardButton("📌 Nama Kegiatan", callback_data="editf_nama_kegiatan")],
             [InlineKeyboardButton("🏢 Nama Usaha", callback_data="editf_nama_usaha")],
-            [InlineKeyboardButton("📱 No HP PIC", callback_data="editf_nohp")],
-            [InlineKeyboardButton("👷 Nama PIC", callback_data="editf_pic")],
-            [InlineKeyboardButton("💼 Jabatan PIC", callback_data="editf_jabatan")],
-            [InlineKeyboardButton("📝 Hasil", callback_data="editf_hasil")],
-            [InlineKeyboardButton("📍 Lokasi", callback_data="editf_lokasi")],
-            [InlineKeyboardButton("📸 Foto", callback_data="editf_foto")],
+            [InlineKeyboardButton("👷 Nama PIC Pelanggan", callback_data="editf_pic")],
+            [InlineKeyboardButton("📱 No HP PIC Pelanggan", callback_data="editf_nohp")],
+            [InlineKeyboardButton("💼 Jabatan PIC Pelanggan", callback_data="editf_jabatan")],
+            [InlineKeyboardButton("📝 Hasil Kegiatan", callback_data="editf_hasil")],
+            [InlineKeyboardButton("📍 Lokasi Usaha", callback_data="editf_lokasi")],
+            [InlineKeyboardButton("📸 Foto Kegiatan", callback_data="editf_foto")],
         ]
         await query.message.reply_text(
             "Pilih data yang ingin diedit:", reply_markup=InlineKeyboardMarkup(daftar_tombol)
@@ -291,7 +292,7 @@ async def keg_ringkasan_aksi(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ringkasan_final = (
         f"👤 {ud['nama']} ({kode})\n" + _teks_ringkasan_kegiatan(ud, "✅ LAPORAN KEGIATAN TERSIMPAN")
     )
-    await query.message.reply_text(ringkasan_final)
+    await query.message.reply_text(ringkasan_final, reply_markup=MENU_UTAMA_KEYBOARD)
     await kirim_notifikasi_grup(context, ringkasan_final, ud.get("foto_kegiatan"))
 
     context.user_data.clear()
@@ -336,7 +337,7 @@ async def keg_pilih_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if field == "nohp":
         await query.message.reply_text(
-            "Masukkan No HP PIC yang baru (format +62 atau 08..., ketik '-' kalau tidak ada):"
+            "Masukkan No HP PIC yang baru (format +62 atau 08..., ketik '-' jika tidak ada):"
         )
         return KEG_NOHP
 
