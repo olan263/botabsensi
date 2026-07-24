@@ -15,11 +15,14 @@ from ..states import (
 from ..utils.misc import escape_markdown, sensor_nomor_hp, validasi_no_hp, tanggal_hari_ini
 from ..utils.geo import buat_link_google_maps, reverse_geocode
 from .registrasi import pastikan_terdaftar
-from .umum import download_foto_dari_pesan, kirim_notifikasi_grup, MENU_UTAMA_KEYBOARD, MENU_BATAL_KEYBOARD
+from .umum import download_foto_dari_pesan, kirim_notifikasi_grup, MENU_UTAMA_KEYBOARD, MENU_BATAL_KEYBOARD, pastikan_chat_pribadi
 
 
 async def kegiatan_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+
+    if not await pastikan_chat_pribadi(update):
+        return ConversationHandler.END
 
     hasil_daftar = await pastikan_terdaftar(update, context)
     if hasil_daftar is None:

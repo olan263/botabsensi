@@ -3,6 +3,7 @@
 handler absen & kegiatan."""
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
@@ -10,7 +11,8 @@ from telegram.ext import ContextTypes, ConversationHandler
 from .. import db
 from ..config import logger, GROUP_CHAT_ID, GROUP_CHAT_ID_INT, FOLDER_FOTO
 from ..integrations.export_excel import OPENPYXL_TERSEDIA, build_excel_export_sync
-from ..utils.misc import sensor_nomor_hp
+from ..utils.misc import sensor_nomor_hp, tanggal_hari_ini, waktu_sekarang
+from ..utils.image import kompres_foto
 import asyncio
 from telegram import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
@@ -46,8 +48,9 @@ async def download_foto_dari_pesan(update: Update, prefix: str):
     if tg_file is None:
         return None
 
-    path_foto = os.path.join(FOLDER_FOTO, f"{prefix}_{int(datetime.now().timestamp())}.{ext}")
+    path_foto = os.path.join(FOLDER_FOTO, f"{prefix}_{int(datetime.now(ZoneInfo('Asia/Jakarta')).timestamp())}.{ext}")
     await tg_file.download_to_drive(path_foto)
+    await asyncio.to_thread(kompres_foto, path_foto)
     return path_foto
 
 
@@ -141,31 +144,39 @@ async def rekap_absen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    tanggal = tanggal_hari_ini()
     try:
-        baris_absensi = await db.ambil_rekap_absensi()
+        semua_karyawan = await db.ambil_semua_karyawan()
+        absensi_hari_ini = await db.ambil_absensi_tanggal(tanggal)
     except Exception as e:
         logger.error(f"Gagal ambil rekap absensi dari database: {e}")
         await update.message.reply_text("⚠️ Gagal mengambil data rekap absensi dari database. Coba lagi nanti.")
         return
 
-    teks = "=== REKAP ABSENSI ===\n"
-    if not baris_absensi:
-        teks += "\nBelum ada data absensi.\n"
+    status_by_kode = {baris[0]: baris[3] for baris in absensi_hari_ini}
 
-    tanggal_terakhir = None
-    for tanggal, kode, nama, jam_absen, status, tag_lokasi in baris_absensi:
-        if tanggal != tanggal_terakhir:
-            teks += f"\n{tanggal}\n"
-            tanggal_terakhir = tanggal
-        teks += f"• {kode} | {nama} | Jam {jam_absen} | {status}\n"
-        if tag_lokasi:
-            teks += f"  Lokasi: {tag_lokasi}\n"
+    def format_status(status_db):
+        if status_db is None:
+            return "BELUM"
+        if status_db in ("Sakit", "Izin"):
+            return status_db.upper()
+        return "SUDAH"
+
+    tanggal_tampil = datetime.strptime(tanggal, "%Y-%m-%d").strftime("%d/%m/%Y")
+    jam_tampil = waktu_sekarang().strftime("%H:%M")
+
+    teks = (
+        f"Rekap Absen Pagi" + chr(10) +
+        f"Tgl : {tanggal_tampil}" + chr(10) +
+        f"Jam : {jam_tampil} WIB" + chr(10) + chr(10) +
+        f"Kode / Nama / Absen Pagi" + chr(10)
+    )
+    for kode, nama in semua_karyawan:
+        teks += f"{kode} / {nama} / {format_status(status_by_kode.get(kode))}" + chr(10)
 
     batas = 4000
     for i in range(0, len(teks), batas):
         await update.message.reply_text(teks[i:i + batas])
-
-
 async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
@@ -173,50 +184,43 @@ async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    tanggal = tanggal_hari_ini()
     try:
-        baris_kegiatan = await db.ambil_rekap_kegiatan()
+        semua_karyawan = await db.ambil_semua_karyawan()
+        absensi_hari_ini = await db.ambil_absensi_tanggal(tanggal)
+        agregat_kegiatan = await db.ambil_agregat_kegiatan_tanggal(tanggal)
     except Exception as e:
         logger.error(f"Gagal ambil rekap kegiatan dari database: {e}")
         await update.message.reply_text("⚠️ Gagal mengambil data rekap kegiatan dari database. Coba lagi nanti.")
         return
 
-    teks = "=== REKAP KEGIATAN ===\n"
-    if not baris_kegiatan:
-        teks += "\nBelum ada data kegiatan.\n"
+    status_absen_by_kode = {baris[0]: baris[3] for baris in absensi_hari_ini}
+    agregat_by_kode = {baris[0]: (baris[1], baris[2]) for baris in agregat_kegiatan}
 
-    tanggal_terakhir = None
-    for tanggal, kode, nama_karyawan, nama_kegiatan, nama_usaha, nama_pic, jabatan_pic, no_hp_pic in baris_kegiatan:
-        if tanggal != tanggal_terakhir:
-            teks += f"\n{tanggal}\n"
-            tanggal_terakhir = tanggal
-        teks += (
-            f"• {kode} | {nama_karyawan} | {nama_kegiatan}\n"
-            f"  Usaha: {nama_usaha or '-'}\n"
-            f"  PIC: {nama_pic} ({jabatan_pic}) — {sensor_nomor_hp(no_hp_pic)}\n"
-        )
+    def format_absen(status_db):
+        if status_db is None:
+            return "TIDAK MASUK"
+        if status_db in ("Sakit", "Izin"):
+            return status_db.upper()
+        return "MASUK"
+
+    tanggal_tampil = datetime.strptime(tanggal, "%Y-%m-%d").strftime("%d/%m/%Y")
+    jam_tampil = waktu_sekarang().strftime("%H:%M")
+
+    teks = (
+        f"Rekap Aktivitas" + chr(10) +
+        f"Tgl : {tanggal_tampil}" + chr(10) +
+        f"Jam : {jam_tampil} WIB" + chr(10) + chr(10) +
+        f"Kode / Nama / Absen / Jumlah Visit / Deal" + chr(10)
+    )
+    for kode, nama in semua_karyawan:
+        absen_tampil = format_absen(status_absen_by_kode.get(kode))
+        visit, deal = agregat_by_kode.get(kode, (0, 0))
+        teks += f"{kode} / {nama} / {absen_tampil} / {visit} / {deal}" + chr(10)
 
     batas = 4000
     for i in range(0, len(teks), batas):
         await update.message.reply_text(teks[i:i + batas])
-
-
-def _parse_rentang_tanggal(args):
-    """Parse argumen command jadi (tanggal_mulai, tanggal_selesai) format 'YYYY-MM-DD',
-    atau (None, None) kalau tidak ada argumen. Raise ValueError kalau formatnya salah."""
-    if not args:
-        return None, None
-    if len(args) != 2:
-        raise ValueError("Harus 2 tanggal: tanggal_mulai dan tanggal_selesai.")
-
-    tanggal_mulai_str, tanggal_selesai_str = args
-    tanggal_mulai = datetime.strptime(tanggal_mulai_str, "%Y-%m-%d").date()
-    tanggal_selesai = datetime.strptime(tanggal_selesai_str, "%Y-%m-%d").date()
-    if tanggal_mulai > tanggal_selesai:
-        tanggal_mulai, tanggal_selesai = tanggal_selesai, tanggal_mulai
-
-    return tanggal_mulai.isoformat(), tanggal_selesai.isoformat()
-
-
 async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/exportexcel [YYYY-MM-DD YYYY-MM-DD] - khusus dari grup notifikasi resmi."""
     if not await _cek_akses_rekap(update):
@@ -263,3 +267,14 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Menangkap semua exception yang tidak tertangani di handler manapun."""
     logger.error(f"Terjadi exception saat memproses update: {context.error}", exc_info=context.error)
+
+async def pastikan_chat_pribadi(update: Update):
+    """Return True kalau chat ini private (DM ke bot). Kalau dipanggil di
+    grup, otomatis balas penolakan dan return False."""
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(
+            "\u274c Command ini cuma bisa dipakai lewat chat pribadi dengan bot, bukan di grup.\n"
+            "Silakan klik nama bot ini, buka chat pribadi (DM), baru jalankan lagi."
+        )
+        return False
+    return True

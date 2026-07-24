@@ -13,14 +13,17 @@ from ..states import (
     ABSEN_STATUS, ABSEN_RENCANA, ABSEN_LOKASI, ABSEN_FOTO, ABSEN_KONFIRMASI,
     ABSEN_IZIN_KETERANGAN, ABSEN_IZIN_TAMBAH_FOTO, ABSEN_IZIN_FOTO,
 )
-from ..utils.misc import escape_markdown, tanggal_hari_ini
+from ..utils.misc import escape_markdown, tanggal_hari_ini, waktu_sekarang
 from ..utils.geo import cari_kantor_terdekat
 from .registrasi import pastikan_terdaftar
-from .umum import download_foto_dari_pesan, kirim_notifikasi_grup, kirim_notifikasi_grup_teks, MENU_UTAMA_KEYBOARD, MENU_BATAL_KEYBOARD
+from .umum import download_foto_dari_pesan, kirim_notifikasi_grup, kirim_notifikasi_grup_teks, MENU_UTAMA_KEYBOARD, MENU_BATAL_KEYBOARD, pastikan_chat_pribadi
 
 
 async def absen_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+
+    if not await pastikan_chat_pribadi(update):
+        return ConversationHandler.END
 
     hasil = await pastikan_terdaftar(update, context)
     if hasil is None:
@@ -149,9 +152,6 @@ async def absen_izin_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await absen_tampilkan_ringkasan(update, context)
 
 
-
-
-
 async def absen_lokasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.location:
         await update.message.reply_text(
@@ -229,7 +229,7 @@ def _teks_ringkasan_absen(ud, judul):
             f"📝 Keterangan: {ud.get('keterangan_izin')}"
         )
 
-    jam_sekarang = datetime.now().time()
+    jam_sekarang = waktu_sekarang().time()
     batas_telat = datetime.strptime("11:00", "%H:%M").time()
     status_preview = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
     return (
@@ -349,14 +349,14 @@ async def absen_konfirmasi_aksi(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.clear()
         return ConversationHandler.END
 
-    jam_sekarang = datetime.now().time()
+    jam_sekarang = waktu_sekarang().time()
     batas_telat = datetime.strptime("11:00", "%H:%M").time()
     status_absen = "Tepat Waktu" if jam_sekarang <= batas_telat else "Telat (Lanjut untuk kegiatan lain)"
 
     try:
         await services.simpan_absensi(
-            tanggal, kode, nama, ud["tag_lokasi"], ud["foto"], ud["rencana_kegiatan"],
-            datetime.now().strftime("%H:%M"), status_absen,
+            tanggal, kode, ud["nama"], ud["tag_lokasi"], ud["foto"], ud["rencana_kegiatan"],
+            waktu_sekarang().strftime("%H:%M"), status_absen,
         )
     except Exception as e:
         logger.error(f"Gagal simpan absensi ke database: {e}")
@@ -368,7 +368,7 @@ async def absen_konfirmasi_aksi(update: Update, context: ContextTypes.DEFAULT_TY
     caption = (
         "✅ ABSEN MASUK\n\n"
         f"👤 {ud['nama']} ({kode})\n"
-        f"🕒 {datetime.now().strftime('%H:%M')} — {status_absen}\n"
+        f"🕒 {waktu_sekarang().strftime('%H:%M')} — {status_absen}\n"
         f"📍 {ud['tag_lokasi']}\n"
         f"📝 Rencana: {ud['rencana_kegiatan']}"
     )

@@ -106,6 +106,7 @@ TITIK_LOKASI_RESMI = [
     {"nama": "Cinere", "lat": -6.344098479526588, "lon": 106.7783042674652},
     {"nama": "Ex Plasa Grapari", "lat": -6.3886237759186395, "lon": 106.81892645767132},
     {"nama": "Cendana", "lat": -6.477439, "lon": 106.839196},
+    {"nama": "Bogor", "lat": -6.587393434661149 , "lon":106.8049720038097 },
 ]
 
 RADIUS_LOKASI_METER = 50

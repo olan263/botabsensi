@@ -274,3 +274,44 @@ def _ambil_karyawan_belum_absen_sync(tanggal):
 
 async def ambil_karyawan_belum_absen(tanggal):
     return await asyncio.to_thread(_ambil_karyawan_belum_absen_sync, tanggal)
+
+
+# ---------- TAMBAHAN UNTUK /rekapabsen DAN /rekapkegiatan (format snapshot harian) ----------
+
+def _ambil_semua_karyawan_sync():
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT kode_ar, nama_ar FROM karyawan ORDER BY kode_ar")
+            return cur.fetchall()
+    finally:
+        _db_pool.putconn(conn)
+
+
+async def ambil_semua_karyawan():
+    return await asyncio.to_thread(_ambil_semua_karyawan_sync)
+
+
+def _ambil_agregat_kegiatan_tanggal_sync(tanggal):
+    """Return list (kode_ar, jumlah_visit, jumlah_deal) untuk tanggal tsb."""
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT kode_ar,
+                       COUNT(*) AS jumlah_visit,
+                       COUNT(*) FILTER (WHERE status_deal = 'Deal') AS jumlah_deal
+                FROM kegiatan
+                WHERE tanggal_kegiatan = %s
+                GROUP BY kode_ar
+                """,
+                (tanggal,),
+            )
+            return cur.fetchall()
+    finally:
+        _db_pool.putconn(conn)
+
+
+async def ambil_agregat_kegiatan_tanggal(tanggal):
+    return await asyncio.to_thread(_ambil_agregat_kegiatan_tanggal_sync, tanggal)
