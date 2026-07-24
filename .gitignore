@@ -4,4 +4,7 @@ msal_token_cache.bin
 *.db
 __pycache__/
 *.pyc
-.venv/gcs-key.json
+.venv/
+gcs-key.json
+foto_absen/
+*.bak
