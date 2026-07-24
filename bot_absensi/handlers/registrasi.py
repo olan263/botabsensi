@@ -6,9 +6,13 @@ from .. import db
 from ..config import logger
 from ..states import REGISTRASI_KODE
 from ..utils.misc import escape_markdown
+from .umum import pastikan_chat_pribadi
 
 
 async def registrasi_mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await pastikan_chat_pribadi(update):
+        return ConversationHandler.END
+
     telegram_id = update.effective_user.id
     sudah = await db.cari_kode_by_telegram_id(telegram_id)
     if sudah is not None:
