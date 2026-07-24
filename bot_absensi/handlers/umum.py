@@ -221,6 +221,23 @@ async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batas = 4000
     for i in range(0, len(teks), batas):
         await update.message.reply_text(teks[i:i + batas])
+
+def _parse_rentang_tanggal(args):
+    """Parse argumen command jadi (tanggal_mulai, tanggal_selesai) format 'YYYY-MM-DD',
+    atau (None, None) kalau tidak ada argumen. Raise ValueError kalau formatnya salah."""
+    if not args:
+        return None, None
+    if len(args) != 2:
+        raise ValueError("Harus 2 tanggal: tanggal_mulai dan tanggal_selesai.")
+
+    tanggal_mulai_str, tanggal_selesai_str = args
+    tanggal_mulai = datetime.strptime(tanggal_mulai_str, "%Y-%m-%d").date()
+    tanggal_selesai = datetime.strptime(tanggal_selesai_str, "%Y-%m-%d").date()
+    if tanggal_mulai > tanggal_selesai:
+        tanggal_mulai, tanggal_selesai = tanggal_selesai, tanggal_mulai
+
+    return tanggal_mulai.isoformat(), tanggal_selesai.isoformat()
+
 async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/exportexcel [YYYY-MM-DD YYYY-MM-DD] - khusus dari grup notifikasi resmi."""
     if not await _cek_akses_rekap(update):
