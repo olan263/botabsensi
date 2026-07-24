@@ -140,7 +140,7 @@ async def mulai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def rekap_absen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
-            "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
+            "❌ Fitur ini hanya untuk penggunaan di dalam Grup, dan tidak dapat diakses pada Chat Pribadi Bot."
         )
         return
 
@@ -180,7 +180,7 @@ async def rekap_absen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def rekap_kegiatan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
-            "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
+            "❌ Fitur ini hanya untuk penggunaan di dalam Grup, dan tidak dapat diakses pada Chat Pribadi Bot."
         )
         return
 
@@ -242,7 +242,7 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/exportexcel [YYYY-MM-DD YYYY-MM-DD] - khusus dari grup notifikasi resmi."""
     if not await _cek_akses_rekap(update):
         await update.message.reply_text(
-            "❌ Command ini hanya bisa dijalankan di dalam grup notifikasi resmi."
+            "❌ Fitur ini hanya untuk penggunaan di dalam Grup, dan tidak dapat diakses pada Chat Pribadi Bot."
         )
         return
 
@@ -290,8 +290,8 @@ async def pastikan_chat_pribadi(update: Update):
     grup, otomatis balas penolakan dan return False."""
     if update.effective_chat.type != "private":
         await update.message.reply_text(
-            "\u274c Command ini cuma bisa dipakai lewat chat pribadi dengan bot, bukan di grup.\n"
-            "Silakan klik nama bot ini, buka chat pribadi (DM), baru jalankan lagi."
+            "❌ Fitur ini hanya dapat diakses melalui Chat Pribadi dengan Bot, tidak tersedia untuk penggunaan di dalam Grup.\n"
+            "Silakan klik profil Bot ini, buka Chat Pribadi, dan gunakan fitur ini pada Chat Pribadi."
         )
         return False
     return True
